@@ -20,6 +20,7 @@ MAIN_OBJECTS = $(BUILDDIR)/main.o $(CORE_OBJECTS)
 # Archivos de prueba
 TEST_FILE_MANAGER = $(TESTDIR)/test_file_manager.c
 TEST_PARSER = $(TESTDIR)/test_parser.c
+TEST_COMPRESSION = $(TESTDIR)/test_compression.c
 TEST_INTEGRATED = $(TESTDIR)/test_integrated.c
 
 
@@ -47,6 +48,11 @@ $(TESTBUILDDIR)/test_parser: $(TEST_PARSER) $(CORE_OBJECTS)
 	@mkdir -p $(TESTBUILDDIR)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# Programa de pruebas de compresión
+$(TESTBUILDDIR)/test_compression: $(TEST_COMPRESSION) $(CORE_OBJECTS)
+	@mkdir -p $(TESTBUILDDIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
 # Targets principales
 all: $(TARGET)
 
@@ -64,7 +70,11 @@ test-integrated: $(TESTBUILDDIR)/test_integrated
 	@echo "=== Ejecutando pruebas de integración ==="
 	@./$(TESTBUILDDIR)/test_integrated
 
-test-all: test-file-manager test-parser test-integrated
+test-compression: $(TESTBUILDDIR)/test_compression
+	@echo "=== Ejecutando pruebas de compresión ==="
+	@./$(TESTBUILDDIR)/test_compression
+
+test-all: test-file-manager test-parser test-compression test-integrated
 	@echo "=== Todas las pruebas completadas ==="
 
 # Limpiar
