@@ -1,10 +1,10 @@
 #!/bin/bash
 
-echo "=== Pruebas del Parser de Argumentos ==="
+echo "=== Pruebas del Gestor de Archivos ==="
 echo
 
 make clean
-make test-parser
+make test-file-manager
 
 echo ""
 echo "=== Pruebas completadas ==="

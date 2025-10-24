@@ -1,10 +1,10 @@
 #!/bin/bash
 
-echo "=== Pruebas del Parser de Argumentos ==="
+echo "=== Pruebas de Integración ==="
 echo
 
 make clean
-make test-parser
+make test-integrated
 
 echo ""
 echo "=== Pruebas completadas ==="
