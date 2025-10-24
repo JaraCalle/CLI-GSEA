@@ -4,6 +4,7 @@
 #include "../include/args_parser.h"
 #include "../include/file_manager.h"
 #include "../include/compression.h"
+#include "../include/encryption.h"
 
 int execute_compression_operations(const program_config_t *config, 
                                   const unsigned char *input_data, 
@@ -82,6 +83,72 @@ int execute_compression_operations(const program_config_t *config,
     return 0;
 }
 
+int execute_encryption_operations(const program_config_t *config, 
+                                 const unsigned char *input_data, 
+                                 size_t input_size,
+                                 unsigned char **output_data, 
+                                 size_t *output_size) {
+    
+    if (config->operations & OP_ENCRYPT) {
+        printf("Encriptando con algoritmo: ");
+        switch (config->enc_alg) {
+            case ENC_ALG_VIGENERE:
+                printf("Vigenère\n");
+                encryption_result_t encrypted = encrypt_vigenere(
+                    input_data, input_size, 
+                    (const unsigned char *)config->key, strlen(config->key)
+                );
+                if (encrypted.error != 0) {
+                    fprintf(stderr, "Error en encriptación Vigenère: %d\n", encrypted.error);
+                    return -1;
+                }
+                
+                *output_data = encrypted.data;
+                *output_size = encrypted.size;
+                printf("Encriptación completada: %zu -> %zu bytes\n", 
+                       input_size, encrypted.size);
+                break;
+                
+            default:
+                fprintf(stderr, "Error: Algoritmo de encriptación no válido\n");
+                return -1;
+        }
+    }
+    else if (config->operations & OP_DECRYPT) {
+        printf("Desencriptando con algoritmo: ");
+        switch (config->enc_alg) {
+            case ENC_ALG_VIGENERE:
+                printf("Vigenère\n");
+                encryption_result_t decrypted = decrypt_vigenere(
+                    input_data, input_size, 
+                    (const unsigned char *)config->key, strlen(config->key)
+                );
+                if (decrypted.error != 0) {
+                    fprintf(stderr, "Error en desencriptación Vigenère: %d\n", decrypted.error);
+                    return -1;
+                }
+                
+                *output_data = decrypted.data;
+                *output_size = decrypted.size;
+                printf("Desencriptación completada: %zu -> %zu bytes\n", 
+                       input_size, decrypted.size);
+                break;
+                
+            default:
+                fprintf(stderr, "Error: Algoritmo de encriptación no válido\n");
+                return -1;
+        }
+    }
+    else {
+        // Sin operación de encriptación, copiar datos
+        *output_data = (unsigned char *)malloc(input_size);
+        memcpy(*output_data, input_data, input_size);
+        *output_size = input_size;
+    }
+    
+    return 0;
+}
+
 int execute_operations(const program_config_t *config) {
     printf("Ejecutando operaciones...\n");
     
@@ -102,19 +169,69 @@ int execute_operations(const program_config_t *config) {
     
     printf("Archivo leído correctamente (%zu bytes)\n", input_size);
     
-    // Procesar datos (compresión/descompresión)
+    // Determinar el orden de operaciones
     unsigned char *processed_data = NULL;
     size_t processed_size = 0;
+    int result = 0;
     
-    if (execute_compression_operations(config, input_data, input_size, 
-                                      &processed_data, &processed_size) != 0) {
-        free(input_data);
+    if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
+        // Comprimir primero, luego encriptar
+        printf("Orden: COMPRIMIR -> ENCRIPTAR\n");
+        
+        unsigned char *compressed_data = NULL;
+        size_t compressed_size = 0;
+        
+        if (execute_compression_operations(config, input_data, input_size, 
+                                          &compressed_data, &compressed_size) == 0) {
+            result = execute_encryption_operations(config, compressed_data, compressed_size,
+                                                 &processed_data, &processed_size);
+            free(compressed_data);
+        } else {
+            result = -1;
+        }
+    }
+    else if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
+        // Desencriptar primero, luego descomprimir
+        printf("Orden: DESENCRIPTAR -> DESCOMPRIMIR\n");
+        
+        unsigned char *decrypted_data = NULL;
+        size_t decrypted_size = 0;
+        
+        if (execute_encryption_operations(config, input_data, input_size,
+                                         &decrypted_data, &decrypted_size) == 0) {
+            result = execute_compression_operations(config, decrypted_data, decrypted_size,
+                                                  &processed_data, &processed_size);
+            free(decrypted_data);
+        } else {
+            result = -1;
+        }
+    }
+    else {
+        // Solo una operación o combinación simple
+        if (config->operations & (OP_COMPRESS | OP_DECOMPRESS)) {
+            result = execute_compression_operations(config, input_data, input_size,
+                                                  &processed_data, &processed_size);
+        } else if (config->operations & (OP_ENCRYPT | OP_DECRYPT)) {
+            result = execute_encryption_operations(config, input_data, input_size,
+                                                 &processed_data, &processed_size);
+        } else {
+            // Sin operaciones específicas, copiar datos
+            processed_data = (unsigned char *)malloc(input_size);
+            memcpy(processed_data, input_data, input_size);
+            processed_size = input_size;
+        }
+    }
+    
+    // Liberar datos de entrada
+    free(input_data);
+    
+    if (result != 0) {
+        if (processed_data != NULL) {
+            free(processed_data);
+        }
         return -1;
     }
     
-    // Liberar datos de entrada (ya procesados)
-    free(input_data);
-        
     // Escribir archivo de salida
     printf("Escribiendo archivo de salida: %s\n", config->output_path);
     if (write_file(config->output_path, processed_data, processed_size) != 0) {

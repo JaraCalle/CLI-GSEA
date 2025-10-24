@@ -21,6 +21,7 @@ MAIN_OBJECTS = $(BUILDDIR)/main.o $(CORE_OBJECTS)
 TEST_FILE_MANAGER = $(TESTDIR)/test_file_manager.c
 TEST_PARSER = $(TESTDIR)/test_parser.c
 TEST_COMPRESSION = $(TESTDIR)/test_compression.c
+TEST_ENCRYPTION = $(TESTDIR)/test_encryption.c
 TEST_INTEGRATED = $(TESTDIR)/test_integrated.c
 
 
@@ -53,6 +54,11 @@ $(TESTBUILDDIR)/test_compression: $(TEST_COMPRESSION) $(CORE_OBJECTS)
 	@mkdir -p $(TESTBUILDDIR)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# Programa de pruebas de encriptación
+$(TESTBUILDDIR)/test_encryption: $(TEST_ENCRYPTION) $(CORE_OBJECTS)
+	@mkdir -p $(TESTBUILDDIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
 # Targets principales
 all: $(TARGET)
 
@@ -65,7 +71,6 @@ test-parser: $(TESTBUILDDIR)/test_parser
 	@echo "=== Ejecutando pruebas del parser ==="
 	@./$(TESTBUILDDIR)/test_parser
 
-
 test-integrated: $(TESTBUILDDIR)/test_integrated
 	@echo "=== Ejecutando pruebas de integración ==="
 	@./$(TESTBUILDDIR)/test_integrated
@@ -74,7 +79,11 @@ test-compression: $(TESTBUILDDIR)/test_compression
 	@echo "=== Ejecutando pruebas de compresión ==="
 	@./$(TESTBUILDDIR)/test_compression
 
-test-all: test-file-manager test-parser test-compression test-integrated
+test-encryption: $(TESTBUILDDIR)/test_encryption
+	@echo "=== Ejecutando pruebas de encriptación ==="
+	@./$(TESTBUILDDIR)/test_encryption
+
+test-all: test-file-manager test-parser test-compression test-encryption test-integrated
 	@echo "=== Todas las pruebas completadas ==="
 
 # Limpiar
