@@ -23,6 +23,7 @@ TEST_PARSER = $(TESTDIR)/test_parser.c
 TEST_COMPRESSION = $(TESTDIR)/test_compression.c
 TEST_ENCRYPTION = $(TESTDIR)/test_encryption.c
 TEST_INTEGRATED = $(TESTDIR)/test_integrated.c
+TEST_DIR_UTILS = $(TESTDIR)/test_dir_utils.c
 
 
 # Target principal
@@ -59,6 +60,11 @@ $(TESTBUILDDIR)/test_encryption: $(TEST_ENCRYPTION) $(CORE_OBJECTS)
 	@mkdir -p $(TESTBUILDDIR)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# Programa de pruebas de utilidades de directorio
+$(TESTBUILDDIR)/test_dir_utils: $(TEST_DIR_UTILS) $(CORE_OBJECTS)
+	@mkdir -p $(TESTBUILDDIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
 # Targets principales
 all: $(TARGET)
 
@@ -83,7 +89,11 @@ test-encryption: $(TESTBUILDDIR)/test_encryption
 	@echo "=== Ejecutando pruebas de encriptación ==="
 	@./$(TESTBUILDDIR)/test_encryption
 
-test-all: test-file-manager test-parser test-compression test-encryption test-integrated
+test-dir-utils: $(TESTBUILDDIR)/test_dir_utils
+	@echo "=== Ejecutando pruebas de utilidades de directorio ==="
+	@./$(TESTBUILDDIR)/test_dir_utils
+
+test-all: test-file-manager test-parser test-compression test-encryption test-dir-utils test-integrated
 	@echo "=== Todas las pruebas completadas ==="
 
 # Limpiar
@@ -99,5 +109,6 @@ valgrind-test: $(TESTBUILDDIR)/test_file_manager
 test-scripts:
 	@chmod +x $(TESTDIR)/test_parser.sh
 	@chmod +x $(TESTDIR)/test_files.sh
+	@chmod +x $(TESTDIR)/test_dir_utils.sh
 
-.PHONY: all clean test-all test-file-manager test-parser valgrind-test test-scripts
+.PHONY: all clean test-all test-file-manager test-parser valgrind-test test-scripts test-compression test-encryption test-dir-utils test-integrated
