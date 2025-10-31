@@ -24,6 +24,7 @@ TEST_COMPRESSION = $(TESTDIR)/test_compression.c
 TEST_ENCRYPTION = $(TESTDIR)/test_encryption.c
 TEST_INTEGRATED = $(TESTDIR)/test_integrated.c
 TEST_DIR_UTILS = $(TESTDIR)/test_dir_utils.c
+TEST_CONCURRENCY = $(TESTDIR)/test_concurrency.c
 
 
 # Target principal
@@ -65,6 +66,11 @@ $(TESTBUILDDIR)/test_dir_utils: $(TEST_DIR_UTILS) $(CORE_OBJECTS)
 	@mkdir -p $(TESTBUILDDIR)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# Programa de pruebas de concurrencia
+$(TESTBUILDDIR)/test_concurrency: $(TEST_DIR_UTILS) $(CORE_OBJECTS)
+	@mkdir -p $(TESTBUILDDIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
 # Targets principales
 all: $(TARGET)
 
@@ -93,7 +99,11 @@ test-dir-utils: $(TESTBUILDDIR)/test_dir_utils
 	@echo "=== Ejecutando pruebas de utilidades de directorio ==="
 	@./$(TESTBUILDDIR)/test_dir_utils
 
-test-all: test-file-manager test-parser test-compression test-encryption test-dir-utils test-integrated
+test-concurrency: $(TESTBUILDDIR)/test_concurrency
+	@echo "=== Ejecutando pruebas de concurrencia ==="
+	@./$(TESTBUILDDIR)/test_concurrency
+
+test-all: test-file-manager test-parser test-compression test-encryption test-dir-utils test-integrated test-concurrency
 	@echo "=== Todas las pruebas completadas ==="
 
 # Limpiar
@@ -111,4 +121,4 @@ test-scripts:
 	@chmod +x $(TESTDIR)/test_files.sh
 	@chmod +x $(TESTDIR)/test_dir_utils.sh
 
-.PHONY: all clean test-all test-file-manager test-parser valgrind-test test-scripts test-compression test-encryption test-dir-utils test-integrated
+.PHONY: all clean test-all test-file-manager test-parser valgrind-test test-scripts test-compression test-encryption test-dir-utils test-integrated test-concurrency

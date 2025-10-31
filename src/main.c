@@ -5,6 +5,7 @@
 #include "../include/file_manager.h"
 #include "../include/compression.h"
 #include "../include/encryption.h"
+#include "../include/concurrency.h"
 
 int execute_compression_operations(const program_config_t *config, 
                                   const unsigned char *input_data, 
@@ -250,50 +251,70 @@ int execute_operations(const program_config_t *config) {
         return -1;
     }
     
-    unsigned char *input_data = NULL;
-    unsigned char *output_data = NULL;
-    size_t input_size = 0;
-    size_t output_size = 0;
-    int result = 0;
-    
-    // Paso 1: Leer archivo de entrada
-    printf("Paso 1: Leyendo archivo de entrada: %s\n", config->input_path);
-    if (read_file(config->input_path, &input_data, &input_size) != 0) {
-        fprintf(stderr, "Error: No se pudo leer el archivo de entrada '%s'\n", config->input_path);
+    // Verificar si la entrada es un directorio
+    struct stat path_stat;
+    if (stat(config->input_path, &path_stat) != 0) {
+        fprintf(stderr, "Error: No se puede acceder a '%s'\n", config->input_path);
         return -1;
     }
-    printf("  ✓ Archivo leído correctamente (%zu bytes)\n", input_size);
     
-    // Paso 2: Procesar datos (compresión/encriptación)
-    printf("Paso 2: Procesando datos...\n");
-    result = execute_operations_sequential(config, input_data, input_size, 
-                                         &output_data, &output_size);
-    
-    // Liberar datos de entrada inmediatamente después del procesamiento
-    free(input_data);
-    input_data = NULL;
-    
-    if (result != 0) {
-        if (output_data != NULL) {
-            free(output_data);
+    if (S_ISDIR(path_stat.st_mode)) {
+        // Modo directorio: procesamiento concurrente
+        printf("Entrada detectada como directorio - Activando modo concurrente\n");
+        return process_directory_concurrent(config);
+    } else if (S_ISREG(path_stat.st_mode)) {
+        // Modo archivo único: procesamiento secuencial
+        printf("Entrada detectada como archivo único - Modo secuencial\n");
+        
+        unsigned char *input_data = NULL;
+        unsigned char *output_data = NULL;
+        size_t input_size = 0;
+        size_t output_size = 0;
+        int result = 0;
+        
+        // Paso 1: Leer archivo de entrada
+        printf("Paso 1: Leyendo archivo de entrada: %s\n", config->input_path);
+        if (read_file(config->input_path, &input_data, &input_size) != 0) {
+            fprintf(stderr, "Error: No se pudo leer el archivo de entrada '%s'\n", config->input_path);
+            return -1;
         }
-        return -1;
-    }
-    
-    // Paso 3: Escribir archivo de salida
-    printf("Paso 3: Escribiendo archivo de salida: %s\n", config->output_path);
-    if (write_file(config->output_path, output_data, output_size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir el archivo de salida '%s'\n", config->output_path);
+        printf("  ✓ Archivo leído correctamente (%zu bytes)\n", input_size);
+        
+        // Paso 2: Procesar datos (compresión/encriptación)
+        printf("Paso 2: Procesando datos...\n");
+        result = execute_operations_sequential(config, input_data, input_size, 
+                                             &output_data, &output_size);
+        
+        // Liberar datos de entrada inmediatamente después del procesamiento
+        free(input_data);
+        input_data = NULL;
+        
+        if (result != 0) {
+            if (output_data != NULL) {
+                free(output_data);
+            }
+            return -1;
+        }
+        
+        // Paso 3: Escribir archivo de salida
+        printf("Paso 3: Escribiendo archivo de salida: %s\n", config->output_path);
+        if (write_file(config->output_path, output_data, output_size) != 0) {
+            fprintf(stderr, "Error: No se pudo escribir el archivo de salida '%s'\n", config->output_path);
+            free(output_data);
+            return -1;
+        }
+        printf("  ✓ Archivo escrito correctamente (%zu bytes)\n", output_size);
+        
+        // Liberar memoria final
         free(output_data);
+        
+        printf("Procesamiento completado exitosamente\n");
+        return 0;
+    } else {
+        fprintf(stderr, "Error: La entrada '%s' no es un archivo regular ni un directorio\n", 
+                config->input_path);
         return -1;
     }
-    printf("  ✓ Archivo escrito correctamente (%zu bytes)\n", output_size);
-    
-    // Liberar memoria final
-    free(output_data);
-    
-    printf("Procesamiento completado exitosamente\n");
-    return 0;
 }
 
 void show_usage(const char *program_name) {
