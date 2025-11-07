@@ -18,7 +18,7 @@ typedef enum {
 operation_mode_t detect_operation_mode(const program_config_t *config) {
     struct stat input_stat;
     if (stat(config->input_path, &input_stat) != 0) {
-        return MODE_SINGLE_FILE; // Fallback por defecto
+        return MODE_SINGLE_FILE;
     }
     
     if (S_ISDIR(input_stat.st_mode)) {
@@ -26,16 +26,23 @@ operation_mode_t detect_operation_mode(const program_config_t *config) {
     }
     
     if (S_ISREG(input_stat.st_mode)) {
-        // Si estamos descomprimiendo+desencriptando
-        if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
-            // Verificar si la entrada es un archive GSEA
-            if (is_gsea_archive_file(config->input_path)) {
+        // Para archivos regulares, verificar si es un archive basado en extensión
+        // y operaciones solicitadas
+        const char *ext = strrchr(config->input_path, '.');
+        
+        // Si la entrada tiene extensión de archive y estamos haciendo operaciones de extracción
+        if (ext && (strcmp(ext, ".gsea") == 0 || strcmp(ext, ".rle") == 0 || 
+                    strcmp(ext, ".enc") == 0 || strcmp(ext, ".GSEA") == 0)) {
+            
+            // Verificar que estamos haciendo operaciones de extracción/descompresión/desencriptación
+            if ((config->operations & OP_DECOMPRESS) || (config->operations & OP_DECRYPT)) {
                 return MODE_ARCHIVE_EXTRACT;
             }
-            
-            // También verificar si la salida es un directorio existente
-            struct stat output_stat;
-            if (stat(config->output_path, &output_stat) == 0 && S_ISDIR(output_stat.st_mode)) {
+        }
+        
+        // También considerar archives basado en detección de magic number
+        if (is_gsea_archive_file(config->input_path)) {
+            if ((config->operations & OP_DECOMPRESS) || (config->operations & OP_DECRYPT)) {
                 return MODE_ARCHIVE_EXTRACT;
             }
         }
@@ -103,20 +110,73 @@ int execute_operations(const program_config_t *config) {
     
     switch (mode) {
         case MODE_DIRECTORY:
-            printf("Entrada detectada como directorio - Modo archive único\n");
+            printf("Entrada detectada como directorio - Modo archive\n");
+            
+            // Comprobar todas las combinaciones posibles para directorios
             if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
                 return compress_and_encrypt_directory(config);
-            } else if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
+            } 
+            else if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
                 return decrypt_and_decompress_directory(config);
-            } else {
-                fprintf(stderr, "Error: Para directorios solo se permiten combinaciones -ce o -du\n");
+            }
+            else if (config->operations & OP_COMPRESS) {
+                // Solo comprimir
+                if (strlen(config->key) > 0) {
+                    printf("Advertencia: Clave proporcionada pero no se usará (solo compresión)\n");
+                }
+                return compress_directory_only(config);
+            }
+            else if (config->operations & OP_DECOMPRESS) {
+                // Solo descomprimir
+                if (strlen(config->key) > 0) {
+                    printf("Advertencia: Clave proporcionada pero no se usará (solo descompresión)\n");
+                }
+                return decompress_directory_only(config);
+            }
+            else if (config->operations & OP_ENCRYPT) {
+                // Solo encriptar
+                if (strlen(config->key) == 0) {
+                    fprintf(stderr, "Error: Se requiere clave (-k) para encriptación\n");
+                    return -1;
+                }
+                return encrypt_directory_only(config);
+            }
+            else if (config->operations & OP_DECRYPT) {
+                // Solo desencriptar
+                if (strlen(config->key) == 0) {
+                    fprintf(stderr, "Error: Se requiere clave (-k) para desencriptación\n");
+                    return -1;
+                }
+                return decrypt_directory_only(config);
+            }
+            else {
+                fprintf(stderr, "Error: No se especificaron operaciones válidas para directorio\n");
+                fprintf(stderr, "Operaciones disponibles: -c, -d, -e, -u, -ce, -du\n");
                 return -1;
             }
             break;
             
         case MODE_ARCHIVE_EXTRACT:
-            printf("Entrada detectada como archive GSEA - Extrayendo a directorio\n");
-            return decrypt_and_decompress_directory(config);
+            printf("Entrada detectada como archive - Extrayendo a directorio\n");
+            
+            // Para archives, determinar qué operaciones se necesitan
+            if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
+                return decrypt_and_decompress_directory(config);
+            }
+            else if (config->operations & OP_DECOMPRESS) {
+                return decompress_directory_only(config);
+            }
+            else if (config->operations & OP_DECRYPT) {
+                if (strlen(config->key) == 0) {
+                    fprintf(stderr, "Error: Se requiere clave (-k) para desencriptación\n");
+                    return -1;
+                }
+                return decrypt_directory_only(config);
+            }
+            else {
+                fprintf(stderr, "Error: Para archives se requiere al menos -d o -u\n");
+                return -1;
+            }
             break;
             
         case MODE_SINGLE_FILE:

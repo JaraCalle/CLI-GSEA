@@ -19,7 +19,10 @@ typedef struct {
     size_t total_size;
 } archive_t;
 
-
+int compress_directory_only(const program_config_t *config);
+int decompress_directory_only(const program_config_t *config);
+int encrypt_directory_only(const program_config_t *config);
+int decrypt_directory_only(const program_config_t *config);
 archive_t* create_archive_from_dir(const char *dir_path);
 void free_archive(archive_t *archive);
 int serialize_archive(const archive_t *archive, unsigned char **data, size_t *size);

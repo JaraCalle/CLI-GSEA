@@ -259,8 +259,113 @@ int extract_archive(const archive_t *archive, const char *output_dir) {
     return 0;
 }
 
+int compress_directory_only(const program_config_t *config) {
+    printf("Comprimiendo directorio: %s\n", config->input_path);
+    
+    // Crear archive desde directorio
+    archive_t *archive = create_archive_from_dir(config->input_path);
+    if (!archive) {
+        fprintf(stderr, "Error: No se pudo crear archive del directorio\n");
+        return -1;
+    }
+    
+    printf("Archive creado: %ld archivos, %ld bytes totales\n", 
+           (long)archive->file_count, (long)archive->total_size);
+    
+    // Serializar archive
+    unsigned char *serialized_data = NULL;
+    size_t serialized_size = 0;
+    if (serialize_archive(archive, &serialized_data, &serialized_size) != 0) {
+        fprintf(stderr, "Error: No se pudo serializar archive\n");
+        free_archive(archive);
+        return -1;
+    }
+    
+    free_archive(archive);
+    
+    printf("Archive serializado: %ld bytes\n", (long)serialized_size);
+    
+    // Comprimir datos serializados
+    compression_result_t compressed = compress_rle(serialized_data, serialized_size);
+    free(serialized_data);
+    
+    if (compressed.error != 0) {
+        fprintf(stderr, "Error: No se pudo comprimir archive\n");
+        return -1;
+    }
+    
+    printf("Archive comprimido: %ld → %ld bytes (ratio: %.2f)\n",
+           (long)serialized_size, (long)compressed.size,
+           (double)compressed.size / serialized_size);
+    
+    // Escribir archivo final
+    if (write_file(config->output_path, compressed.data, compressed.size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir archivo de salida\n");
+        free_compression_result(&compressed);
+        return -1;
+    }
+    
+    free_compression_result(&compressed);
+    
+    printf("Archive comprimido guardado en: %s\n", config->output_path);
+    return 0;
+}
+
+int encrypt_directory_only(const program_config_t *config) {
+    printf("Encriptando directorio: %s\n", config->input_path);
+    
+    // Crear archive desde directorio
+    archive_t *archive = create_archive_from_dir(config->input_path);
+    if (!archive) {
+        fprintf(stderr, "Error: No se pudo crear archive del directorio\n");
+        return -1;
+    }
+    
+    printf("Archive creado: %ld archivos, %ld bytes totales\n", 
+           (long)archive->file_count, (long)archive->total_size);
+    
+    // Serializar archive
+    unsigned char *serialized_data = NULL;
+    size_t serialized_size = 0;
+    if (serialize_archive(archive, &serialized_data, &serialized_size) != 0) {
+        fprintf(stderr, "Error: No se pudo serializar archive\n");
+        free_archive(archive);
+        return -1;
+    }
+    
+    free_archive(archive);
+    
+    printf("Archive serializado: %ld bytes\n", (long)serialized_size);
+    
+    // Encriptar datos serializados
+    encryption_result_t encrypted = encrypt_vigenere(
+        serialized_data, serialized_size,
+        (const unsigned char *)config->key, strlen(config->key)
+    );
+    free(serialized_data);
+    
+    if (encrypted.error != 0) {
+        fprintf(stderr, "Error: No se pudo encriptar archive\n");
+        return -1;
+    }
+    
+    printf("Archive encriptado: %ld bytes\n", (long)encrypted.size);
+    
+    // Escribir archivo final
+    if (write_file(config->output_path, encrypted.data, encrypted.size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir archivo de salida\n");
+        free_encryption_result(&encrypted);
+        return -1;
+    }
+    
+    free_encryption_result(&encrypted);
+    
+    printf("Archive encriptado guardado en: %s\n", config->output_path);
+    return 0;
+}
+
 int compress_and_encrypt_directory(const program_config_t *config) {
-    printf("Creando archive del directorio: %s\n", config->input_path);
+    printf("Comprimiendo y encriptando directorio: %s\n", config->input_path);
     
     // Crear archive desde directorio
     archive_t *archive = create_archive_from_dir(config->input_path);
@@ -325,8 +430,57 @@ int compress_and_encrypt_directory(const program_config_t *config) {
     return 0;
 }
 
-int decrypt_and_decompress_directory(const program_config_t *config) {
-    printf("Cargando archive: %s\n", config->input_path);
+int decompress_directory_only(const program_config_t *config) {
+    printf("Descomprimiendo archive: %s\n", config->input_path);
+    
+    // Leer archivo comprimido
+    unsigned char *compressed_data = NULL;
+    size_t compressed_size = 0;
+    if (read_file(config->input_path, &compressed_data, &compressed_size) != 0) {
+        fprintf(stderr, "Error: No se pudo leer archivo de entrada\n");
+        return -1;
+    }
+    
+    printf("Archive leído: %ld bytes\n", (long)compressed_size);
+    
+    // Descomprimir
+    compression_result_t decompressed = decompress_rle(compressed_data, compressed_size);
+    free(compressed_data);
+    
+    if (decompressed.error != 0) {
+        fprintf(stderr, "Error: No se pudo descomprimir archive\n");
+        return -1;
+    }
+    
+    printf("Archive descomprimido: %ld → %ld bytes\n",
+           (long)compressed_size, (long)decompressed.size);
+    
+    // Deserializar archive
+    archive_t *archive = deserialize_archive(decompressed.data, decompressed.size);
+    free_compression_result(&decompressed);
+    
+    if (!archive) {
+        fprintf(stderr, "Error: No se pudo deserializar archive (formato inválido)\n");
+        return -1;
+    }
+    
+    printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
+    
+    // Extraer archive a directorio
+    if (extract_archive(archive, config->output_path) != 0) {
+        fprintf(stderr, "Error: No se pudo extraer archive\n");
+        free_archive(archive);
+        return -1;
+    }
+    
+    free_archive(archive);
+    
+    printf("Archive extraído en: %s\n", config->output_path);
+    return 0;
+}
+
+int decrypt_directory_only(const program_config_t *config) {
+    printf("Desencriptando archive: %s\n", config->input_path);
     
     // Leer archivo encriptado
     unsigned char *encrypted_data = NULL;
@@ -350,7 +504,60 @@ int decrypt_and_decompress_directory(const program_config_t *config) {
         return -1;
     }
     
-    printf("Archive desencriptado: %ld bytes\n", (long)decrypted.size);
+    printf("Archive desencriptado: %ld → %ld bytes\n",
+           (long)encrypted_size, (long)decrypted.size);
+    
+    // Deserializar archive
+    archive_t *archive = deserialize_archive(decrypted.data, decrypted.size);
+    free_encryption_result(&decrypted);
+    
+    if (!archive) {
+        fprintf(stderr, "Error: No se pudo deserializar archive (formato inválido)\n");
+        return -1;
+    }
+    
+    printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
+    
+    // Extraer archive a directorio
+    if (extract_archive(archive, config->output_path) != 0) {
+        fprintf(stderr, "Error: No se pudo extraer archive\n");
+        free_archive(archive);
+        return -1;
+    }
+    
+    free_archive(archive);
+    
+    printf("Archive extraído en: %s\n", config->output_path);
+    return 0;
+}
+
+int decrypt_and_decompress_directory(const program_config_t *config) {
+    printf("Desencriptando y descomprimiendo archive: %s\n", config->input_path);
+    
+    // Leer archivo encriptado
+    unsigned char *encrypted_data = NULL;
+    size_t encrypted_size = 0;
+    if (read_file(config->input_path, &encrypted_data, &encrypted_size) != 0) {
+        fprintf(stderr, "Error: No se pudo leer archivo de entrada\n");
+        return -1;
+    }
+    
+    printf("Archive leído: %ld bytes\n", (long)encrypted_size);
+    
+    // Desencriptar
+    encryption_result_t decrypted = decrypt_vigenere(
+        encrypted_data, encrypted_size,
+        (const unsigned char *)config->key, strlen(config->key)
+    );
+    free(encrypted_data);
+    
+    if (decrypted.error != 0) {
+        fprintf(stderr, "Error: No se pudo desencriptar archive\n");
+        return -1;
+    }
+    
+    printf("Archive desencriptado: %ld → %ld bytes\n",
+           (long)encrypted_size, (long)decrypted.size);
     
     // Descomprimir
     compression_result_t decompressed = decompress_rle(decrypted.data, decrypted.size);
