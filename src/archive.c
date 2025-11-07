@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <libgen.h>
 #include <errno.h>
+#include <unistd.h>
 #include "../include/archive.h"
 #include "../include/file_manager.h"
 #include "../include/compression.h"
@@ -13,6 +14,81 @@
 // Formatos para serialización
 #define ARCHIVE_MAGIC "GSEAARCHv1"
 #define ARCHIVE_HEADER_SIZE 10
+
+char* process_output_path(const program_config_t *config) {
+    // Si el usuario ya proporcionó un path de salida, usarlo
+    if (strlen(config->output_path) > 0) {
+        return strdup(config->output_path);
+    }
+    
+    // Generar path de salida automático
+    char *auto_path = generate_auto_output_path(config->input_path, config);
+    if (auto_path) {
+        printf("Salida automática generada: %s\n", auto_path);
+        return auto_path;
+    }
+    
+    // Fallback: usar nombre por defecto
+    return strdup("salida.gsea");
+}
+
+const char* get_auto_extension(const program_config_t *config) {
+    if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
+        return ".gsea";
+    } else if (config->operations & OP_COMPRESS) {
+        return ".rle";
+    } else if (config->operations & OP_ENCRYPT) {
+        return ".enc";
+    } else if (config->operations & OP_DECOMPRESS) {
+        return "";
+    } else if (config->operations & OP_DECRYPT) {
+        return "";
+    }
+    return "";
+}
+
+char* generate_auto_output_path(const char *input_path, const program_config_t *config) {
+    // Obtener el nombre base del archivo/directorio de entrada
+    const char *base_name = strrchr(input_path, '/');
+    if (base_name == NULL) {
+        base_name = input_path;
+    } else {
+        base_name++; // Saltar el '/'
+    }
+    
+    char *name_copy = NULL;
+    const char *original_base = base_name;
+    
+    // Si es un archivo (no directorio), quitar la extensión existente
+    struct stat path_stat;
+    if (stat(input_path, &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
+        name_copy = strdup(base_name);
+        if (name_copy) {
+            char *dot = strrchr(name_copy, '.');
+            if (dot) {
+                *dot = '\0'; // Truncar en el punto
+            }
+            base_name = name_copy;
+        }
+    }
+    
+    // Generar la extensión automática
+    const char *extension = get_auto_extension(config);
+    
+    // Construir el nombre completo
+    size_t path_len = strlen(base_name) + strlen(extension) + 1;
+    char *output_name = (char *)malloc(path_len);
+    if (output_name) {
+        snprintf(output_name, path_len, "%s%s", base_name, extension);
+    }
+    
+    // Liberar memoria si hicimos copia
+    if (name_copy) {
+        free(name_copy);
+    }
+    
+    return output_name;
+}
 
 size_t calculate_serialized_size(const archive_t *archive) {
     size_t total_size = ARCHIVE_HEADER_SIZE + sizeof(size_t);
@@ -259,7 +335,7 @@ int extract_archive(const archive_t *archive, const char *output_dir) {
     return 0;
 }
 
-int compress_directory_only(const program_config_t *config) {
+int compress_directory_only(const program_config_t *config, const char *output_path) {
     printf("Comprimiendo directorio: %s\n", config->input_path);
     
     // Crear archive desde directorio
@@ -299,19 +375,19 @@ int compress_directory_only(const program_config_t *config) {
            (double)compressed.size / serialized_size);
     
     // Escribir archivo final
-    if (write_file(config->output_path, compressed.data, compressed.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida\n");
+    if (write_file(output_path, compressed.data, compressed.size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
         free_compression_result(&compressed);
         return -1;
     }
     
     free_compression_result(&compressed);
     
-    printf("Archive comprimido guardado en: %s\n", config->output_path);
+    printf("Archive comprimido guardado en: %s\n", output_path);
     return 0;
 }
 
-int encrypt_directory_only(const program_config_t *config) {
+int encrypt_directory_only(const program_config_t *config, const char *output_path) {
     printf("Encriptando directorio: %s\n", config->input_path);
     
     // Crear archive desde directorio
@@ -352,19 +428,19 @@ int encrypt_directory_only(const program_config_t *config) {
     printf("Archive encriptado: %ld bytes\n", (long)encrypted.size);
     
     // Escribir archivo final
-    if (write_file(config->output_path, encrypted.data, encrypted.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida\n");
+    if (write_file(output_path, encrypted.data, encrypted.size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
         free_encryption_result(&encrypted);
         return -1;
     }
     
     free_encryption_result(&encrypted);
     
-    printf("Archive encriptado guardado en: %s\n", config->output_path);
+    printf("Archive encriptado guardado en: %s\n", output_path);
     return 0;
 }
 
-int compress_and_encrypt_directory(const program_config_t *config) {
+int compress_and_encrypt_directory(const program_config_t *config, const char *output_path) {
     printf("Comprimiendo y encriptando directorio: %s\n", config->input_path);
     
     // Crear archive desde directorio
@@ -418,19 +494,19 @@ int compress_and_encrypt_directory(const program_config_t *config) {
     printf("Archive encriptado: %ld bytes\n", (long)encrypted.size);
     
     // Escribir archivo final
-    if (write_file(config->output_path, encrypted.data, encrypted.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida\n");
+    if (write_file(output_path, encrypted.data, encrypted.size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
         free_encryption_result(&encrypted);
         return -1;
     }
     
     free_encryption_result(&encrypted);
     
-    printf("Archive guardado en: %s\n", config->output_path);
+    printf("Archive guardado en: %s\n", output_path);
     return 0;
 }
 
-int decompress_directory_only(const program_config_t *config) {
+int decompress_directory_only(const program_config_t *config, const char *output_path) {
     printf("Descomprimiendo archive: %s\n", config->input_path);
     
     // Leer archivo comprimido
@@ -467,7 +543,7 @@ int decompress_directory_only(const program_config_t *config) {
     printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
     
     // Extraer archive a directorio
-    if (extract_archive(archive, config->output_path) != 0) {
+    if (extract_archive(archive, output_path) != 0) {
         fprintf(stderr, "Error: No se pudo extraer archive\n");
         free_archive(archive);
         return -1;
@@ -475,11 +551,11 @@ int decompress_directory_only(const program_config_t *config) {
     
     free_archive(archive);
     
-    printf("Archive extraído en: %s\n", config->output_path);
+    printf("Archive extraído en: %s\n", output_path);
     return 0;
 }
 
-int decrypt_directory_only(const program_config_t *config) {
+int decrypt_directory_only(const program_config_t *config, const char *output_path) {
     printf("Desencriptando archive: %s\n", config->input_path);
     
     // Leer archivo encriptado
@@ -519,7 +595,7 @@ int decrypt_directory_only(const program_config_t *config) {
     printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
     
     // Extraer archive a directorio
-    if (extract_archive(archive, config->output_path) != 0) {
+    if (extract_archive(archive, output_path) != 0) {
         fprintf(stderr, "Error: No se pudo extraer archive\n");
         free_archive(archive);
         return -1;
@@ -527,11 +603,11 @@ int decrypt_directory_only(const program_config_t *config) {
     
     free_archive(archive);
     
-    printf("Archive extraído en: %s\n", config->output_path);
+    printf("Archive extraído en: %s\n", output_path);
     return 0;
 }
 
-int decrypt_and_decompress_directory(const program_config_t *config) {
+int decrypt_and_decompress_directory(const program_config_t *config, const char *output_path) {
     printf("Desencriptando y descomprimiendo archive: %s\n", config->input_path);
     
     // Leer archivo encriptado
@@ -583,7 +659,7 @@ int decrypt_and_decompress_directory(const program_config_t *config) {
     printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
     
     // Extraer archive a directorio
-    if (extract_archive(archive, config->output_path) != 0) {
+    if (extract_archive(archive, output_path) != 0) {
         fprintf(stderr, "Error: No se pudo extraer archive\n");
         free_archive(archive);
         return -1;
@@ -591,7 +667,7 @@ int decrypt_and_decompress_directory(const program_config_t *config) {
     
     free_archive(archive);
     
-    printf("Archive extraído en: %s\n", config->output_path);
+    printf("Archive extraído en: %s\n", output_path);
     return 0;
 }
 

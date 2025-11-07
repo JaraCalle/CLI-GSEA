@@ -19,17 +19,24 @@ typedef struct {
     size_t total_size;
 } archive_t;
 
-int compress_directory_only(const program_config_t *config);
-int decompress_directory_only(const program_config_t *config);
-int encrypt_directory_only(const program_config_t *config);
-int decrypt_directory_only(const program_config_t *config);
+// Funciones para nombres automáticos
+const char* get_auto_extension(const program_config_t *config);
+char* generate_auto_output_path(const char *input_path, const program_config_t *config);
+char* process_output_path(const program_config_t *config);
+
+// Funciones de directorio (actualizadas para aceptar output_path)
+int compress_directory_only(const program_config_t *config, const char *output_path);
+int encrypt_directory_only(const program_config_t *config, const char *output_path);
+int compress_and_encrypt_directory(const program_config_t *config, const char *output_path);
+int decompress_directory_only(const program_config_t *config, const char *output_path);
+int decrypt_directory_only(const program_config_t *config, const char *output_path);
+int decrypt_and_decompress_directory(const program_config_t *config, const char *output_path);
+
 archive_t* create_archive_from_dir(const char *dir_path);
 void free_archive(archive_t *archive);
 int serialize_archive(const archive_t *archive, unsigned char **data, size_t *size);
 archive_t* deserialize_archive(const unsigned char *data, size_t size);
 int extract_archive(const archive_t *archive, const char *output_dir);
-int compress_and_encrypt_directory(const program_config_t *config);
-int decrypt_and_decompress_directory(const program_config_t *config);
 int is_serialized_archive(const unsigned char *data, size_t size);
 int is_gsea_archive_file(const char *file_path);
 

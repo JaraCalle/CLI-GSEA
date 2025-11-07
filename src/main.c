@@ -58,10 +58,14 @@ int execute_single_file_operations(const program_config_t *config) {
     size_t output_size = 0;
     int result = 0;
     
+    // Procesar path de salida automáticamente
+    char *output_path = process_output_path(config);
+    
     // Paso 1: Leer archivo de entrada
     printf("Paso 1: Leyendo archivo de entrada: %s\n", config->input_path);
     if (read_file(config->input_path, &input_data, &input_size) != 0) {
         fprintf(stderr, "Error: No se pudo leer el archivo de entrada '%s'\n", config->input_path);
+        free(output_path);
         return -1;
     }
     printf("  ✓ Archivo leído correctamente (%zu bytes)\n", input_size);
@@ -79,23 +83,83 @@ int execute_single_file_operations(const program_config_t *config) {
         if (output_data != NULL) {
             free(output_data);
         }
+        free(output_path);
         return -1;
     }
     
     // Paso 3: Escribir archivo de salida
-    printf("Paso 3: Escribiendo archivo de salida: %s\n", config->output_path);
-    if (write_file(config->output_path, output_data, output_size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir el archivo de salida '%s'\n", config->output_path);
+    printf("Paso 3: Escribiendo archivo de salida: %s\n", output_path);
+    if (write_file(output_path, output_data, output_size) != 0) {
+        fprintf(stderr, "Error: No se pudo escribir el archivo de salida '%s'\n", output_path);
         free(output_data);
+        free(output_path);
         return -1;
     }
     printf("  ✓ Archivo escrito correctamente (%zu bytes)\n", output_size);
     
     // Liberar memoria final
     free(output_data);
+    free(output_path);
     
     printf("Procesamiento completado exitosamente\n");
     return 0;
+}
+
+int execute_directory_operations(const program_config_t *config) {
+    // Procesar path de salida automáticamente
+    char *output_path = process_output_path(config);
+    int result = 0;
+    
+    printf("DEBUG: output_path = '%s'\n", output_path); // Para debugging
+    
+    // Comprobar todas las combinaciones posibles para directorios
+    if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
+        result = compress_and_encrypt_directory(config, output_path);
+    } 
+    else if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
+        result = decrypt_and_decompress_directory(config, output_path);
+    }
+    else if (config->operations & OP_COMPRESS) {
+        // Solo comprimir
+        if (strlen(config->key) > 0) {
+            printf("Advertencia: Clave proporcionada pero no se usará (solo compresión)\n");
+        }
+        result = compress_directory_only(config, output_path);
+    }
+    else if (config->operations & OP_DECOMPRESS) {
+        // Solo descomprimir
+        if (strlen(config->key) > 0) {
+            printf("Advertencia: Clave proporcionada pero no se usará (solo descompresión)\n");
+        }
+        result = decompress_directory_only(config, output_path);
+    }
+    else if (config->operations & OP_ENCRYPT) {
+        // Solo encriptar
+        if (strlen(config->key) == 0) {
+            fprintf(stderr, "Error: Se requiere clave (-k) para encriptación\n");
+            free(output_path);
+            return -1;
+        }
+        result = encrypt_directory_only(config, output_path);
+    }
+    else if (config->operations & OP_DECRYPT) {
+        // Solo desencriptar
+        if (strlen(config->key) == 0) {
+            fprintf(stderr, "Error: Se requiere clave (-k) para desencriptación\n");
+            free(output_path);
+            return -1;
+        }
+        result = decrypt_directory_only(config, output_path);
+    }
+    else {
+        fprintf(stderr, "Error: No se especificaron operaciones válidas para directorio\n");
+        fprintf(stderr, "Operaciones disponibles: -c, -d, -e, -u, -ce, -du\n");
+        free(output_path);
+        return -1;
+    }
+    
+    free(output_path);
+    return result;
 }
 
 int execute_operations(const program_config_t *config) {
@@ -111,79 +175,16 @@ int execute_operations(const program_config_t *config) {
     switch (mode) {
         case MODE_DIRECTORY:
             printf("Entrada detectada como directorio - Modo archive\n");
-            
-            // Comprobar todas las combinaciones posibles para directorios
-            if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
-                return compress_and_encrypt_directory(config);
-            } 
-            else if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
-                return decrypt_and_decompress_directory(config);
-            }
-            else if (config->operations & OP_COMPRESS) {
-                // Solo comprimir
-                if (strlen(config->key) > 0) {
-                    printf("Advertencia: Clave proporcionada pero no se usará (solo compresión)\n");
-                }
-                return compress_directory_only(config);
-            }
-            else if (config->operations & OP_DECOMPRESS) {
-                // Solo descomprimir
-                if (strlen(config->key) > 0) {
-                    printf("Advertencia: Clave proporcionada pero no se usará (solo descompresión)\n");
-                }
-                return decompress_directory_only(config);
-            }
-            else if (config->operations & OP_ENCRYPT) {
-                // Solo encriptar
-                if (strlen(config->key) == 0) {
-                    fprintf(stderr, "Error: Se requiere clave (-k) para encriptación\n");
-                    return -1;
-                }
-                return encrypt_directory_only(config);
-            }
-            else if (config->operations & OP_DECRYPT) {
-                // Solo desencriptar
-                if (strlen(config->key) == 0) {
-                    fprintf(stderr, "Error: Se requiere clave (-k) para desencriptación\n");
-                    return -1;
-                }
-                return decrypt_directory_only(config);
-            }
-            else {
-                fprintf(stderr, "Error: No se especificaron operaciones válidas para directorio\n");
-                fprintf(stderr, "Operaciones disponibles: -c, -d, -e, -u, -ce, -du\n");
-                return -1;
-            }
-            break;
+            return execute_directory_operations(config);
             
         case MODE_ARCHIVE_EXTRACT:
             printf("Entrada detectada como archive - Extrayendo a directorio\n");
-            
-            // Para archives, determinar qué operaciones se necesitan
-            if ((config->operations & OP_DECRYPT) && (config->operations & OP_DECOMPRESS)) {
-                return decrypt_and_decompress_directory(config);
-            }
-            else if (config->operations & OP_DECOMPRESS) {
-                return decompress_directory_only(config);
-            }
-            else if (config->operations & OP_DECRYPT) {
-                if (strlen(config->key) == 0) {
-                    fprintf(stderr, "Error: Se requiere clave (-k) para desencriptación\n");
-                    return -1;
-                }
-                return decrypt_directory_only(config);
-            }
-            else {
-                fprintf(stderr, "Error: Para archives se requiere al menos -d o -u\n");
-                return -1;
-            }
-            break;
+            return execute_directory_operations(config);
             
         case MODE_SINGLE_FILE:
         default:
             printf("Entrada detectada como archivo único - Modo secuencial\n");
             return execute_single_file_operations(config);
-            break;
     }
 }
 
