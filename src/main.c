@@ -16,38 +16,37 @@ typedef enum {
 } operation_mode_t;
 
 operation_mode_t detect_operation_mode(const program_config_t *config) {
-    struct stat input_stat;
-    if (stat(config->input_path, &input_stat) != 0) {
-        return MODE_SINGLE_FILE;
+    struct stat path_stat;
+    
+    if (stat(config->input_path, &path_stat) != 0) {
+        fprintf(stderr, "Error: No se puede acceder a la ruta '%s'\n", config->input_path);
+        return MODE_SINGLE_FILE; // Fallback
     }
     
-    if (S_ISDIR(input_stat.st_mode)) {
+    // Si es un directorio, siempre es modo directory para compresión
+    if (S_ISDIR(path_stat.st_mode)) {
         return MODE_DIRECTORY;
     }
     
-    if (S_ISREG(input_stat.st_mode)) {
-        // Para archivos regulares, verificar si es un archive basado en extensión
-        // y operaciones solicitadas
-        const char *ext = strrchr(config->input_path, '.');
-        
-        // Si la entrada tiene extensión de archive y estamos haciendo operaciones de extracción
-        if (ext && (strcmp(ext, ".gsea") == 0 || strcmp(ext, ".rle") == 0 || 
-                    strcmp(ext, ".enc") == 0 || strcmp(ext, ".GSEA") == 0)) {
-            
-            // Verificar que estamos haciendo operaciones de extracción/descompresión/desencriptación
-            if ((config->operations & OP_DECOMPRESS) || (config->operations & OP_DECRYPT)) {
-                return MODE_ARCHIVE_EXTRACT;
+    // Si es un archivo, verificar si es un archive GSEA
+    if (S_ISREG(path_stat.st_mode)) {
+        // Para operaciones de DESCOMPRESIÓN/DESENCRIPTACIÓN, verificar si es archive
+        if ((config->operations & OP_DECOMPRESS) || (config->operations & OP_DECRYPT)) {
+            // Verificar extensiones comunes de archives
+            const char *ext = strrchr(config->input_path, '.');
+            if (ext != NULL) {
+                if (strcmp(ext, ".gsea") == 0 || strcmp(ext, ".rle") == 0 || 
+                    strcmp(ext, ".enc") == 0 || strcmp(ext, ".huff") == 0) {
+                    // Podría ser un archive, verificar más a fondo
+                    if (is_gsea_archive_file(config->input_path)) {
+                        return MODE_ARCHIVE_EXTRACT;
+                    }
+                }
             }
         }
         
-        // También considerar archives basado en detección de magic number
-        if (is_gsea_archive_file(config->input_path)) {
-            if ((config->operations & OP_DECOMPRESS) || (config->operations & OP_DECRYPT)) {
-                return MODE_ARCHIVE_EXTRACT;
-            }
-        }
+        return MODE_SINGLE_FILE;
     }
-    
     return MODE_SINGLE_FILE;
 }
 
@@ -110,8 +109,6 @@ int execute_directory_operations(const program_config_t *config) {
     char *output_path = process_output_path(config);
     int result = 0;
     
-    printf("DEBUG: output_path = '%s'\n", output_path); // Para debugging
-    
     // Comprobar todas las combinaciones posibles para directorios
     if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
         result = compress_and_encrypt_directory(config, output_path);
@@ -168,6 +165,13 @@ int execute_operations(const program_config_t *config) {
     if (!config->valid) {
         fprintf(stderr, "Error: Configuración inválida\n");
         return -1;
+    }
+    
+    // Para archivos con extensión .huff, forzar modo archivo único
+    const char *ext = strrchr(config->input_path, '.');
+    if (ext != NULL && strcmp(ext, ".huff") == 0) {
+        printf("Archivo Huffman detectado - Modo archivo único\n");
+        return execute_single_file_operations(config);
     }
     
     operation_mode_t mode = detect_operation_mode(config);

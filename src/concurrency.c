@@ -8,6 +8,7 @@
 #include "../include/concurrency.h"
 #include "../include/file_manager.h"
 #include "../include/compression.h"
+#include "../include/compression_huffman.h"
 #include "../include/encryption.h"
 #include "../include/dir_utils.h"
 
@@ -32,13 +33,25 @@ int process_file_operations(const program_config_t *config, const char *input_pa
         
         // Compresión
         compression_result_t compressed = compress_rle(input_data, input_size);
-        if (compressed.error != 0) {
-            fprintf(stderr, "Error en compresión RLE para '%s'\n", input_path);
-            free(input_data);
-            return -1;
+        if (config->comp_alg == COMP_ALG_RLE) {
+            compression_result_t compressed = compress_rle(input_data, input_size);
+            if (compressed.error != 0) {
+                fprintf(stderr, "Error en compresión RLE para '%s'\n", input_path);
+                free(input_data);
+                return -1;
+            }
+            compressed_data = compressed.data;
+            compressed_size = compressed.size;
+        } else if (config->comp_alg == COMP_ALG_HUFFMAN) {
+            compression_result_t compressed = compress_huffman_wrapper(input_data, input_size);
+            if (compressed.error != 0) {
+                fprintf(stderr, "Error en compresión Huffman para '%s'\n", input_path);
+                free(input_data);
+                return -1;
+            }
+            compressed_data = compressed.data;
+            compressed_size = compressed.size;
         }
-        compressed_data = compressed.data;
-        compressed_size = compressed.size;
         
         // Encriptación
         encryption_result_t encrypted = encrypt_vigenere(
@@ -76,15 +89,27 @@ int process_file_operations(const program_config_t *config, const char *input_pa
         
         // Descompresión
         compression_result_t decompressed = decompress_rle(decrypted_data, decrypted_size);
-        if (decompressed.error != 0) {
-            fprintf(stderr, "Error en descompresión RLE para '%s'\n", input_path);
-            free(input_data);
-            free_encryption_result(&decrypted);
-            return -1;
+        if (config->comp_alg == COMP_ALG_RLE) {
+            compression_result_t decompressed = decompress_rle(decrypted_data, decrypted_size);
+            if (decompressed.error != 0) {
+                fprintf(stderr, "Error en descompresión RLE para '%s'\n", input_path);
+                free(input_data);
+                free_encryption_result(&decrypted);
+                return -1;
+            }
+            processed_data = decompressed.data;
+            processed_size = decompressed.size;
+        } else if (config->comp_alg == COMP_ALG_HUFFMAN) {
+            compression_result_t decompressed = decompress_huffman_wrapper(decrypted_data, decrypted_size);
+            if (decompressed.error != 0) {
+                fprintf(stderr, "Error en descompresión Huffman para '%s'\n", input_path);
+                free(input_data);
+                free_encryption_result(&decrypted);
+                return -1;
+            }
+            processed_data = decompressed.data;
+            processed_size = decompressed.size;
         }
-        
-        processed_data = decompressed.data;
-        processed_size = decompressed.size;
         free_encryption_result(&decrypted);
     }
     else if (config->operations & (OP_COMPRESS | OP_DECOMPRESS)) {
