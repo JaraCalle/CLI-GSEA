@@ -85,7 +85,7 @@ int parse_arguments(int argc, char *argv[], program_config_t *config) {
                 // Ruta de salida
                 else if (strcmp(argv[i], "-o") == 0) {
                     if (i + 1 >= argc) {
-                        fprintf(stderr, "Error: -o requiere un argumento.\n");
+                        fprintf(stderr, "Error: -o requiere un argumento\n");
                         return -1;
                     }
                     strncpy(config->output_path, argv[i + 1], MAX_PATH_LENGTH - 1);
@@ -213,32 +213,10 @@ int validate_config(const program_config_t *config) {
         return -1;
     }
 
-    // Verificar ruta de salida
-    if (strlen(config->output_path) == 0) {
-        fprintf(stderr, "Error: Debe especificar una ruta de salida (-o)\n");
-        return -1;
-    }
-
     // Verificar clave para operaciones de encriptación/desencriptación
     if ((config->operations & OP_ENCRYPT) || (config->operations & OP_DECRYPT)) {
         if (strlen(config->key) == 0) {
             fprintf(stderr, "Error: Se requiere una clave (-k) para operaciones de encriptación/desencriptación\n");
-            return -1;
-        }
-    }
-
-    // Verificar algoritmo de compresión si se requiere
-    if ((config->operations & OP_COMPRESS) || (config->operations & OP_DECOMPRESS)) {
-        if (config->comp_alg == COMP_ALG_NONE) {
-            fprintf(stderr, "Error: Debe especificar un algoritmo de compresión válido\n");
-            return -1;
-        }
-    }
-
-    // Verificar algoritmo de encriptación si se requiere
-    if ((config->operations & OP_ENCRYPT) || (config->operations & OP_DECRYPT)) {
-        if (config->enc_alg == ENC_ALG_NONE) {
-            fprintf(stderr, "Error: Debe especificar un algoritmo de encriptación válido\n");
             return -1;
         }
     }
