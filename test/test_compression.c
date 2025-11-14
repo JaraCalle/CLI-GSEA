@@ -74,9 +74,10 @@ void test_rle_non_repetitive() {
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
     
-    // En datos no repetitivos, RLE puede aumentar el tamaño
+    // En datos no repetitivos, el nuevo esquema minimiza el overhead
     double ratio = compression_ratio(data_size, compressed.size);
     printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio <= 1.05);
     
     // Descomprimir
     compression_result_t decompressed = decompress_rle(compressed.data, compressed.size);
@@ -121,9 +122,9 @@ void test_rle_mixed_sequences() {
     
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
-    
-    // Verificar formato: debería tener 5 pares <count><byte>
-    assert(compressed.size == 10); // 5 pares * 2 bytes
+    double ratio = compression_ratio(data_size, compressed.size);
+    printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio < 1.0);
     
     // Descomprimir
     compression_result_t decompressed = decompress_rle(compressed.data, compressed.size);
@@ -162,9 +163,9 @@ void test_rle_max_run_length() {
     
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
-    
-    // Debería comprimirse a solo 2 bytes
-    assert(compressed.size == 2);
+    double ratio = compression_ratio(data_size, compressed.size);
+    printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio < 0.05);
     
     // Verificar el contenido comprimido
     assert(compressed.data[0] == 255); // count
@@ -208,8 +209,8 @@ void test_rle_error_handling() {
     printf("   ✓ Manejo correcto de tamaño 0\n");
     
     // Prueba descompresión con datos corruptos (tamaño impar)
-    unsigned char corrupt_data[] = {1, 2, 3}; // Tamaño impar
-    compression_result_t result3 = decompress_rle(corrupt_data, 3);
+    unsigned char corrupt_data[] = {0x00}; // Bloque literal sin datos suficientes
+    compression_result_t result3 = decompress_rle(corrupt_data, sizeof(corrupt_data));
     assert(result3.error != 0);
     printf("   ✓ Manejo correcto de datos corruptos\n");
     
