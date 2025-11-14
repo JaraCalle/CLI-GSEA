@@ -7,6 +7,7 @@ CLI-GSEA (Gestión Segura y Eficiente de Archivos) es una herramienta de línea 
 * Compresión de archivos usando algoritmos RLE (Run-Length Encoding), Huffman y LZW
 * Encriptación usando cifrado Vigenère
 * Procesamiento concurrente de directorios completos con múltiples hilos
+* Flujo configurable: comprimir, descomprimir, encriptar o desencriptar en cualquier orden compatible
 * Operaciones combinadas (comprimir + encriptar) o individuales
 
 ## Requisitos del Sistema
@@ -41,6 +42,13 @@ Comprimir un archivo:
 ```bash
 ./gsea -c --comp-alg rle -i input.txt -o output.rle
 ./gsea -c --comp-alg lzw -i dataset.bin -o dataset.lzw
+./gsea -c --comp-alg huffman -i video.mp4 -o video.huff
+```
+
+Descomprimir un archivo:
+
+```bash
+./gsea -d --comp-alg huffman -i video.huff -o video.mp4
 ```
 
 ## Opciones de operaciones:
