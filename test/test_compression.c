@@ -4,6 +4,7 @@
 #include <assert.h>
 #include "../include/compression.h"
 #include "../include/file_manager.h"
+#include "../include/compression_lzw.h"
 
 /**
  * @brief Prueba compresión RLE con datos altamente repetitivos
@@ -282,7 +283,7 @@ void test_rle_file_integration() {
 }
 
 int main() {
-    printf("=== GSEA - Pruebas del Algoritmo RLE ===\n\n");
+    printf("=== GSEA - Pruebas de Compresión ===\n\n");
     
     // Crear directorio de salida
     create_directory("test/output");
@@ -293,7 +294,39 @@ int main() {
     test_rle_max_run_length();
     test_rle_error_handling();
     test_rle_file_integration();
+
+    printf("7. Prueba LZW con datos repetitivos:\n");
+    {
+        const char *text = "ABABABAABABABAABABABAABABABA";
+        size_t len = strlen(text);
+        compression_result_t compressed = compress_lzw((const unsigned char *)text, len);
+        assert(compressed.error == 0);
+        compression_result_t decompressed = decompress_lzw(compressed.data, compressed.size);
+        assert(decompressed.error == 0);
+        assert(decompressed.size == len);
+        assert(memcmp(text, decompressed.data, len) == 0);
+        printf("   ✓ Compresión/Descompresión LZW correcta\n");
+        free_compression_result(&compressed);
+        free_compression_result(&decompressed);
+        printf("\n");
+    }
+
+    printf("8. Prueba LZW con archivo binario pequeño:\n");
+    {
+        unsigned char data[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        size_t len = sizeof(data);
+        compression_result_t compressed = compress_lzw(data, len);
+        assert(compressed.error == 0);
+        compression_result_t decompressed = decompress_lzw(compressed.data, compressed.size);
+        assert(decompressed.error == 0);
+        assert(decompressed.size == len);
+        assert(memcmp(data, decompressed.data, len) == 0);
+        printf("   ✓ LZW conserva datos binarios\n");
+        free_compression_result(&compressed);
+        free_compression_result(&decompressed);
+        printf("\n");
+    }
     
-    printf("=== Todas las pruebas RLE completadas ===\n");
+    printf("=== Todas las pruebas de compresión completadas ===\n");
     return 0;
 }

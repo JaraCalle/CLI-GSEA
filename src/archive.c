@@ -10,9 +10,43 @@
 #include "../include/file_manager.h"
 #include "../include/compression.h"
 #include "../include/compression_huffman.h"
+#include "../include/compression_lzw.h"
 #include "../include/encryption.h"
 #include "../include/dir_utils.h"
 #include "../include/concurrency.h"
+static compression_result_t archive_compress(const program_config_t *config,
+                                             const unsigned char *data,
+                                             size_t size) {
+    switch (config->comp_alg) {
+        case COMP_ALG_RLE:
+            return compress_rle(data, size);
+        case COMP_ALG_HUFFMAN:
+            return compress_huffman_wrapper(data, size);
+        case COMP_ALG_LZW:
+            return compress_lzw(data, size);
+        default: {
+            compression_result_t invalid = {NULL, 0, -99};
+            return invalid;
+        }
+    }
+}
+
+static compression_result_t archive_decompress(const program_config_t *config,
+                                               const unsigned char *data,
+                                               size_t size) {
+    switch (config->comp_alg) {
+        case COMP_ALG_RLE:
+            return decompress_rle(data, size);
+        case COMP_ALG_HUFFMAN:
+            return decompress_huffman_wrapper(data, size);
+        case COMP_ALG_LZW:
+            return decompress_lzw(data, size);
+        default: {
+            compression_result_t invalid = {NULL, 0, -99};
+            return invalid;
+        }
+    }
+}
 
 // Formatos para serialización
 #define ARCHIVE_MAGIC "GSEAARCHv1"
@@ -551,12 +585,7 @@ int compress_directory_only(const program_config_t *config, const char *output_p
     printf("Archive serializado: %ld bytes\n", (long)serialized_size);
     
     // Comprimir datos serializados
-    compression_result_t compressed;
-    if (config->comp_alg == COMP_ALG_RLE) {
-        compressed = compress_rle(serialized_data, serialized_size);
-    } else {
-        compressed = compress_huffman_wrapper(serialized_data, serialized_size);
-    }
+    compression_result_t compressed = archive_compress(config, serialized_data, serialized_size);
     
     free(serialized_data);
     
@@ -596,12 +625,7 @@ int decompress_directory_only(const program_config_t *config, const char *output
     printf("Archive leído: %ld bytes\n", (long)compressed_size);
     
     // Descomprimir
-    compression_result_t decompressed;
-    if (config->comp_alg == COMP_ALG_RLE) {
-        decompressed = decompress_rle(compressed_data, compressed_size);
-    } else {
-        decompressed = decompress_huffman_wrapper(compressed_data, compressed_size);
-    }
+    compression_result_t decompressed = archive_decompress(config, compressed_data, compressed_size);
     
     free(compressed_data);
     
@@ -693,12 +717,7 @@ int compress_and_encrypt_directory(const program_config_t *config, const char *o
     printf("Archive serializado: %ld bytes\n", (long)serialized_size);
     
     // Comprimir datos serializados
-    compression_result_t compressed;
-    if (config->comp_alg == COMP_ALG_RLE) {
-        compressed = compress_rle(serialized_data, serialized_size);
-    } else {
-        compressed = compress_huffman_wrapper(serialized_data, serialized_size);
-    }
+    compression_result_t compressed = archive_compress(config, serialized_data, serialized_size);
     
     free(serialized_data);
     
@@ -767,12 +786,7 @@ int decrypt_and_decompress_directory(const program_config_t *config, const char 
            (long)encrypted_size, (long)decrypted.size);
     
     // Descomprimir
-    compression_result_t decompressed;
-    if (config->comp_alg == COMP_ALG_RLE) {
-        decompressed = decompress_rle(decrypted.data, decrypted.size);
-    } else {
-        decompressed = decompress_huffman_wrapper(decrypted.data, decrypted.size);
-    }
+    compression_result_t decompressed = archive_decompress(config, decrypted.data, decrypted.size);
     free_encryption_result(&decrypted);
     
     if (decompressed.error != 0) {

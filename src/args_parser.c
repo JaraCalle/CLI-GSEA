@@ -54,7 +54,7 @@ int parse_arguments(int argc, char *argv[], program_config_t *config) {
                     config->comp_alg = parse_compression_alg(argv[i + 1]);
                     if (config->comp_alg == COMP_ALG_NONE) {
                         fprintf(stderr, "Error: Algoritmo de compresión desconocido '%s'\n", argv[i + 1]);
-                        fprintf(stderr, "Algoritmos disponibles: rle, huffman\n");
+                        fprintf(stderr, "Algoritmos disponibles: rle, huffman, lzw\n");
                         return -1;
                     }
                     i += 2;
@@ -178,6 +178,8 @@ compression_alg_t parse_compression_alg(const char *alg_str) {
         return COMP_ALG_RLE;
     } else if (strcmp(alg_str, "huffman") == 0) {
         return COMP_ALG_HUFFMAN;
+    } else if (strcmp(alg_str, "lzw") == 0) {
+        return COMP_ALG_LZW;
     }
     return COMP_ALG_NONE;
 }
@@ -234,7 +236,7 @@ void print_usage(const char *program_name) {
     printf("  Ejemplo: -ce para comprimir y luego encriptar, -du para descomprimir y desencriptar\n\n");
     
     printf("OPCIONES:\n");
-    printf("  --comp-alg ALGORITMO  Algoritmo de compresión (rle, huffman)\n");
+    printf("  --comp-alg ALGORITMO  Algoritmo de compresión (rle, huffman, lzw)\n");
     printf("  --enc-alg ALGORITMO   Algoritmo de encriptación (vigenere)\n");
     printf("  -i RUTA               Ruta de entrada (archivo o directorio)\n");
     printf("  -o RUTA               Ruta de salida (archivo o directorio)\n");
@@ -244,6 +246,7 @@ void print_usage(const char *program_name) {
     printf("EJEMPLOS:\n");
     printf("  %s -ce --comp-alg rle --enc-alg vigenere -i entrada.txt -o salida.dat -k mi_clave\n", program_name);
     printf("  %s -du --comp-alg huffman --enc-alg vigenere -i archivo.dat -o resultado.txt -k mi_clave\n", program_name);
+    printf("  %s -c --comp-alg lzw -i archivo.bin -o archivo.lzw\n", program_name);
     printf("  %s -c --comp-alg rle -i archivo.txt -o archivo.rle\n", program_name);
     printf("  %s -e --enc-alg vigenere -i datos.txt -o datos.enc -k clave123\n", program_name);
 }

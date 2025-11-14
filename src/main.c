@@ -225,6 +225,7 @@ int main(int argc, char *argv[]) {
     switch (config.comp_alg) {
         case COMP_ALG_RLE: printf("RLE\n"); break;
         case COMP_ALG_HUFFMAN: printf("HUFFMAN\n"); break;
+        case COMP_ALG_LZW: printf("LZW\n"); break;
         default: printf("NONE\n"); break;
     }
     
