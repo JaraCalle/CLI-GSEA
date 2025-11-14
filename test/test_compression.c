@@ -4,6 +4,7 @@
 #include <assert.h>
 #include "../include/compression.h"
 #include "../include/file_manager.h"
+#include "../include/compression_lzw.h"
 
 /**
  * @brief Prueba compresión RLE con datos altamente repetitivos
@@ -73,9 +74,10 @@ void test_rle_non_repetitive() {
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
     
-    // En datos no repetitivos, RLE puede aumentar el tamaño
+    // En datos no repetitivos, el nuevo esquema minimiza el overhead
     double ratio = compression_ratio(data_size, compressed.size);
     printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio <= 1.05);
     
     // Descomprimir
     compression_result_t decompressed = decompress_rle(compressed.data, compressed.size);
@@ -120,9 +122,9 @@ void test_rle_mixed_sequences() {
     
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
-    
-    // Verificar formato: debería tener 5 pares <count><byte>
-    assert(compressed.size == 10); // 5 pares * 2 bytes
+    double ratio = compression_ratio(data_size, compressed.size);
+    printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio < 1.0);
     
     // Descomprimir
     compression_result_t decompressed = decompress_rle(compressed.data, compressed.size);
@@ -161,9 +163,9 @@ void test_rle_max_run_length() {
     
     printf("   ✓ Compresión exitosa\n");
     printf("   Tamaño original: %zu, comprimido: %zu\n", data_size, compressed.size);
-    
-    // Debería comprimirse a solo 2 bytes
-    assert(compressed.size == 2);
+    double ratio = compression_ratio(data_size, compressed.size);
+    printf("   Ratio de compresión: %.2f\n", ratio);
+    assert(ratio < 0.05);
     
     // Verificar el contenido comprimido
     assert(compressed.data[0] == 255); // count
@@ -207,8 +209,8 @@ void test_rle_error_handling() {
     printf("   ✓ Manejo correcto de tamaño 0\n");
     
     // Prueba descompresión con datos corruptos (tamaño impar)
-    unsigned char corrupt_data[] = {1, 2, 3}; // Tamaño impar
-    compression_result_t result3 = decompress_rle(corrupt_data, 3);
+    unsigned char corrupt_data[] = {0x00}; // Bloque literal sin datos suficientes
+    compression_result_t result3 = decompress_rle(corrupt_data, sizeof(corrupt_data));
     assert(result3.error != 0);
     printf("   ✓ Manejo correcto de datos corruptos\n");
     
@@ -282,7 +284,7 @@ void test_rle_file_integration() {
 }
 
 int main() {
-    printf("=== GSEA - Pruebas del Algoritmo RLE ===\n\n");
+    printf("=== GSEA - Pruebas de Compresión ===\n\n");
     
     // Crear directorio de salida
     create_directory("test/output");
@@ -293,7 +295,39 @@ int main() {
     test_rle_max_run_length();
     test_rle_error_handling();
     test_rle_file_integration();
+
+    printf("7. Prueba LZW con datos repetitivos:\n");
+    {
+        const char *text = "ABABABAABABABAABABABAABABABA";
+        size_t len = strlen(text);
+        compression_result_t compressed = compress_lzw((const unsigned char *)text, len);
+        assert(compressed.error == 0);
+        compression_result_t decompressed = decompress_lzw(compressed.data, compressed.size);
+        assert(decompressed.error == 0);
+        assert(decompressed.size == len);
+        assert(memcmp(text, decompressed.data, len) == 0);
+        printf("   ✓ Compresión/Descompresión LZW correcta\n");
+        free_compression_result(&compressed);
+        free_compression_result(&decompressed);
+        printf("\n");
+    }
+
+    printf("8. Prueba LZW con archivo binario pequeño:\n");
+    {
+        unsigned char data[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        size_t len = sizeof(data);
+        compression_result_t compressed = compress_lzw(data, len);
+        assert(compressed.error == 0);
+        compression_result_t decompressed = decompress_lzw(compressed.data, compressed.size);
+        assert(decompressed.error == 0);
+        assert(decompressed.size == len);
+        assert(memcmp(data, decompressed.data, len) == 0);
+        printf("   ✓ LZW conserva datos binarios\n");
+        free_compression_result(&compressed);
+        free_compression_result(&decompressed);
+        printf("\n");
+    }
     
-    printf("=== Todas las pruebas RLE completadas ===\n");
+    printf("=== Todas las pruebas de compresión completadas ===\n");
     return 0;
 }

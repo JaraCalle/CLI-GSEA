@@ -18,7 +18,8 @@ typedef enum {
 typedef enum {
     COMP_ALG_NONE,
     COMP_ALG_RLE,
-    COMP_ALG_HUFFMAN
+    COMP_ALG_HUFFMAN,
+    COMP_ALG_LZW
 } compression_alg_t;
 
 // Algoritmos de encriptación disponibles
