@@ -33,16 +33,17 @@ int execute_compression_operations(const program_config_t *config,
                 
             case COMP_ALG_HUFFMAN:
                 printf("Huffman\n");
-                compression_result_t decompressed_huff = decompress_huffman_wrapper(input_data, input_size);
-                if (decompressed_huff.error != 0) {
-                    fprintf(stderr, "Error: Fallo en descompresión Huffman (código: %d)\n", decompressed_huff.error);
+                compression_result_t compressed_huff = compress_huffman_wrapper(input_data, input_size);
+                if (compressed_huff.error != 0) {
+                    fprintf(stderr, "Error: Fallo en compresión Huffman (código: %d)\n", compressed_huff.error);
                     return -1;
                 }
                 
-                *output_data = decompressed_huff.data;
-                *output_size = decompressed_huff.size;
-                printf("    ✓ Descompresión completada: %zu → %zu bytes\n", 
-                    input_size, decompressed_huff.size);
+                *output_data = compressed_huff.data;
+                *output_size = compressed_huff.size;
+                double ratio_huff = compression_ratio(input_size, compressed_huff.size);
+                printf("    ✓ Compresión completada: %zu → %zu bytes (ratio: %.2f)\n", 
+                    input_size, compressed_huff.size, ratio_huff);
                 break;
                 
             default:
@@ -69,18 +70,16 @@ int execute_compression_operations(const program_config_t *config,
                 
             case COMP_ALG_HUFFMAN:
                 printf("Huffman\n");
-                compression_result_t compressed_huff = compress_huffman_wrapper(input_data, input_size);
-                if (compressed_huff.error != 0) {
-                    fprintf(stderr, "Error: Fallo en compresión Huffman (código: %d)\n", compressed_huff.error);
+                compression_result_t decompressed_huff = decompress_huffman_wrapper(input_data, input_size);
+                if (decompressed_huff.error != 0) {
+                    fprintf(stderr, "Error: Fallo en descompresión Huffman (código: %d)\n", decompressed_huff.error);
                     return -1;
                 }
                 
-                *output_data = compressed_huff.data;
-                *output_size = compressed_huff.size;
-                
-                double ratio_huff = compression_ratio(input_size, compressed_huff.size);
-                printf("    ✓ Compresión completada: %zu → %zu bytes (ratio: %.2f)\n", 
-                    input_size, compressed_huff.size, ratio_huff);
+                *output_data = decompressed_huff.data;
+                *output_size = decompressed_huff.size;
+                printf("    ✓ Descompresión completada: %zu → %zu bytes\n", 
+                    input_size, decompressed_huff.size);
                 break;
                 
             default:
