@@ -3,7 +3,6 @@
 
 #include <pthread.h>
 #include "args_parser.h"
-#include "../include/archive.h"
 
 // Estructura para pasar datos a cada hilo
 typedef struct {
@@ -13,8 +12,6 @@ typedef struct {
     int thread_id;
     int success;
     char error_message[256];
-    unsigned char *file_data;
-    size_t file_size;
 } thread_data_t;
 
 // Estructura para gestionar todos los hilos
@@ -32,10 +29,5 @@ int process_directory_concurrent(const program_config_t *config);
 char* generate_output_path(const char *input_path, const char *output_dir, const program_config_t *config);
 int init_thread_pool(thread_pool_t *pool, int num_threads);
 void free_thread_pool(thread_pool_t *pool);
-
-// Nuevas funciones para concurrencia en archives
-void* process_file_for_archive(void *arg);
-void* process_file_write(void *arg);
-archive_t* create_archive_from_dir_concurrent(const char *dir_path);
 
 #endif

@@ -1,927 +1,486 @@
+#include <errno.h>
+#include <fcntl.h>
+#include <libgen.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <libgen.h>
-#include <errno.h>
 #include <unistd.h>
-#include <pthread.h>
+
 #include "../include/archive.h"
-#include "../include/file_manager.h"
-#include "../include/compression.h"
-#include "../include/compression_huffman.h"
-#include "../include/compression_lzw.h"
-#include "../include/encryption.h"
 #include "../include/dir_utils.h"
-#include "../include/concurrency.h"
-static compression_result_t archive_compress(const program_config_t *config,
-                                             const unsigned char *data,
-                                             size_t size) {
-    switch (config->comp_alg) {
-        case COMP_ALG_RLE:
-            return compress_rle(data, size);
-        case COMP_ALG_HUFFMAN:
-            return compress_huffman_wrapper(data, size);
-        case COMP_ALG_LZW:
-            return compress_lzw(data, size);
-        default: {
-            compression_result_t invalid = {NULL, 0, -99};
-            return invalid;
-        }
-    }
-}
+#include "../include/file_manager.h"
+#include "../include/operations.h"
 
-static compression_result_t archive_decompress(const program_config_t *config,
-                                               const unsigned char *data,
-                                               size_t size) {
-    switch (config->comp_alg) {
-        case COMP_ALG_RLE:
-            return decompress_rle(data, size);
-        case COMP_ALG_HUFFMAN:
-            return decompress_huffman_wrapper(data, size);
-        case COMP_ALG_LZW:
-            return decompress_lzw(data, size);
-        default: {
-            compression_result_t invalid = {NULL, 0, -99};
-            return invalid;
-        }
-    }
-}
-
-// Formatos para serialización
 #define ARCHIVE_MAGIC "GSEAARCHv1"
 #define ARCHIVE_HEADER_SIZE 10
+#define ARCHIVE_IO_BUFFER (64 * 1024)
 
-// Estructura para procesar archivos individualmente con hilos
 typedef struct {
-    const program_config_t *config;
-    const char *input_dir;
-    const char *output_dir;
-    FileList *file_list;
-    int *success_count;
-    int *error_count;
-    pthread_mutex_t *mutex;
-} concurrent_processing_data_t;
+    unsigned char data[ARCHIVE_IO_BUFFER];
+} io_buffer_t;
 
-char* process_output_path(const program_config_t *config) {
-    // Si el usuario ya proporcionó un path de salida, usarlo
+static int create_temp_archive_file(char *buffer, size_t length) {
+    static const char template_path[] = "/tmp/gsea-archive-XXXXXX";
+    if (length <= sizeof(template_path)) {
+        return -1;
+    }
+
+    strncpy(buffer, template_path, length);
+    buffer[length - 1] = '\0';
+
+    int fd = mkstemp(buffer);
+    if (fd == -1) {
+        fprintf(stderr, "Error: no se pudo crear archivo temporal - %s\n", strerror(errno));
+        return -1;
+    }
+
+    close(fd);
+    return 0;
+}
+
+static void free_file_list(FileList *list) {
+    if (!list || !list->paths) {
+        return;
+    }
+
+    for (size_t i = 0; i < list->count; ++i) {
+        free(list->paths[i]);
+    }
+
+    free(list->paths);
+    list->paths = NULL;
+    list->count = 0;
+}
+
+static const char *compute_relative_path(const char *base, const char *absolute) {
+    size_t base_len = strlen(base);
+    if (base_len > 0 && strncmp(base, absolute, base_len) == 0) {
+        const char *relative = absolute + base_len;
+        if (*relative == '/') {
+            relative++;
+        }
+        return relative;
+    }
+
+    return absolute;
+}
+
+static FILE *open_stream(const char *path, const char *mode, const char *action) {
+    FILE *stream = fopen(path, mode);
+    if (!stream) {
+        fprintf(stderr, "Error: no se pudo %s '%s' - %s\n", action, path, strerror(errno));
+    }
+    return stream;
+}
+
+static int ensure_parent_directory(const char *full_path) {
+    char *path_copy = strdup(full_path);
+    if (!path_copy) {
+        fprintf(stderr, "Error: sin memoria para crear directorios de '%s'\n", full_path);
+        return -1;
+    }
+
+    char *parent = dirname(path_copy);
+    int status = create_directory(parent);
+    free(path_copy);
+    return status;
+}
+
+static int copy_stream(FILE *in, FILE *out, size_t total_bytes, io_buffer_t *buffer) {
+    size_t remaining = total_bytes;
+
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof(buffer->data) ? sizeof(buffer->data) : remaining;
+        size_t read_bytes = fread(buffer->data, 1, chunk, in);
+
+        if (read_bytes == 0) {
+            if (ferror(in)) {
+                fprintf(stderr, "Error: fallo leyendo datos - %s\n", strerror(errno));
+            } else {
+                fprintf(stderr, "Error: fin de archivo inesperado\n");
+            }
+            return -1;
+        }
+
+        if (fwrite(buffer->data, 1, read_bytes, out) != read_bytes) {
+            fprintf(stderr, "Error: no se pudo escribir datos - %s\n", strerror(errno));
+            return -1;
+        }
+
+        remaining -= read_bytes;
+    }
+
+    return 0;
+}
+
+static int write_archive_header(FILE *out, size_t file_count) {
+    if (fwrite(ARCHIVE_MAGIC, 1, ARCHIVE_HEADER_SIZE, out) != ARCHIVE_HEADER_SIZE) {
+        fprintf(stderr, "Error: no se pudo escribir el encabezado del archive.\n");
+        return -1;
+    }
+
+    if (fwrite(&file_count, sizeof(size_t), 1, out) != 1) {
+        fprintf(stderr, "Error: no se pudo escribir el número de archivos en el archive.\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int read_archive_header(FILE *in, size_t *file_count) {
+    unsigned char header[ARCHIVE_HEADER_SIZE];
+    if (fread(header, 1, ARCHIVE_HEADER_SIZE, in) != ARCHIVE_HEADER_SIZE) {
+        fprintf(stderr, "Error: encabezado inválido en archive.\n");
+        return -1;
+    }
+
+    if (memcmp(header, ARCHIVE_MAGIC, ARCHIVE_HEADER_SIZE) != 0) {
+        fprintf(stderr, "Error: el archivo no es un archive válido.\n");
+        return -1;
+    }
+
+    if (fread(file_count, sizeof(size_t), 1, in) != 1) {
+        fprintf(stderr, "Error: no se pudo leer el número de archivos del archive.\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int write_archive_entry(FILE *out,
+                               const char *base_dir,
+                               const char *absolute_path,
+                               io_buffer_t *buffer) {
+    const char *relative = compute_relative_path(base_dir, absolute_path);
+    size_t path_len = strlen(relative);
+
+    if (fwrite(&path_len, sizeof(size_t), 1, out) != 1) {
+        fprintf(stderr, "Error: no se pudo escribir la longitud de la ruta en el archive.\n");
+        return -1;
+    }
+
+    if (fwrite(relative, 1, path_len, out) != path_len) {
+        fprintf(stderr, "Error: no se pudo escribir la ruta en el archive.\n");
+        return -1;
+    }
+
+    struct stat st;
+    if (stat(absolute_path, &st) != 0) {
+        fprintf(stderr, "Error: no se pudo obtener tamaño de '%s' - %s\n", absolute_path, strerror(errno));
+        return -1;
+    }
+
+    size_t file_size = (size_t)st.st_size;
+    if (fwrite(&file_size, sizeof(size_t), 1, out) != 1) {
+        fprintf(stderr, "Error: no se pudo escribir el tamaño de '%s' en el archive.\n", relative);
+        return -1;
+    }
+
+    FILE *in = open_stream(absolute_path, "rb", "abrir");
+    if (!in) {
+        return -1;
+    }
+
+    int status = copy_stream(in, out, file_size, buffer);
+    fclose(in);
+
+    if (status == 0) {
+        printf("  + Añadido '%s' (%zu bytes)\n", relative, file_size);
+    }
+
+    return status;
+}
+
+static int extract_archive_entry(FILE *in,
+                                 const char *output_dir,
+                                 io_buffer_t *buffer) {
+    size_t path_len = 0;
+    if (fread(&path_len, sizeof(size_t), 1, in) != 1) {
+        fprintf(stderr, "Error: no se pudo leer la longitud de la ruta del archive.\n");
+        return -1;
+    }
+
+    if (path_len == 0 || path_len >= MAX_PATH_LENGTH) {
+        fprintf(stderr, "Error: ruta inválida dentro del archive.\n");
+        return -1;
+    }
+
+    char *relative = (char *)malloc(path_len + 1);
+    if (!relative) {
+        fprintf(stderr, "Error: sin memoria para ruta del archivo dentro del archive.\n");
+        return -1;
+    }
+
+    if (fread(relative, 1, path_len, in) != path_len) {
+        fprintf(stderr, "Error: no se pudo leer ruta del archive.\n");
+        free(relative);
+        return -1;
+    }
+    relative[path_len] = '\0';
+
+    size_t file_size = 0;
+    if (fread(&file_size, sizeof(size_t), 1, in) != 1) {
+        fprintf(stderr, "Error: no se pudo leer tamaño de archivo en archive.\n");
+        free(relative);
+        return -1;
+    }
+
+    char full_path[MAX_PATH_LENGTH];
+    if (snprintf(full_path, sizeof(full_path), "%s/%s", output_dir, relative) >= (int)sizeof(full_path)) {
+        fprintf(stderr, "Error: la ruta destino es demasiado larga.\n");
+        free(relative);
+        return -1;
+    }
+
+    if (ensure_parent_directory(full_path) != 0) {
+        fprintf(stderr, "Error: no se pudo crear directorio para '%s'.\n", full_path);
+        free(relative);
+        return -1;
+    }
+
+    FILE *out = open_stream(full_path, "wb", "crear");
+    if (!out) {
+        free(relative);
+        return -1;
+    }
+
+    int status = copy_stream(in, out, file_size, buffer);
+    fclose(out);
+
+    if (status == 0) {
+        printf("  + Extraído '%s' (%zu bytes)\n", relative, file_size);
+    }
+
+    free(relative);
+    return status;
+}
+
+char *process_output_path(const program_config_t *config) {
     if (strlen(config->output_path) > 0) {
         return strdup(config->output_path);
     }
-    
-    // Generar path de salida automático
+
     char *auto_path = generate_auto_output_path(config->input_path, config);
     if (auto_path) {
         printf("Salida automática generada: %s\n", auto_path);
         return auto_path;
     }
-    
-    // Fallback: usar nombre por defecto
+
     return strdup("salida.gsea");
 }
 
-const char* get_auto_extension(const program_config_t *config) {
+const char *get_auto_extension(const program_config_t *config) {
     if ((config->operations & OP_COMPRESS) && (config->operations & OP_ENCRYPT)) {
         return ".gsea";
-    } else if (config->operations & OP_COMPRESS) {
+    }
+
+    if (config->operations & OP_COMPRESS) {
         return ".rle";
-    } else if (config->operations & OP_ENCRYPT) {
+    }
+
+    if (config->operations & OP_ENCRYPT) {
         return ".enc";
-    } else if (config->operations & OP_DECOMPRESS) {
-        return "";
-    } else if (config->operations & OP_DECRYPT) {
+    }
+
+    if (config->operations & OP_DECOMPRESS) {
         return "";
     }
+
+    if (config->operations & OP_DECRYPT) {
+        return "";
+    }
+
     return "";
 }
 
-char* generate_auto_output_path(const char *input_path, const program_config_t *config) {
-    // Obtener el nombre base del archivo/directorio de entrada
+char *generate_auto_output_path(const char *input_path, const program_config_t *config) {
     const char *base_name = strrchr(input_path, '/');
     if (base_name == NULL) {
         base_name = input_path;
     } else {
-        base_name++; // Saltar el '/'
+        base_name++;
     }
-    
+
     char *name_copy = NULL;
-    
-    // Si es un archivo (no directorio), quitar la extensión existente
     struct stat path_stat;
     if (stat(input_path, &path_stat) == 0 && S_ISREG(path_stat.st_mode)) {
         name_copy = strdup(base_name);
         if (name_copy) {
             char *dot = strrchr(name_copy, '.');
             if (dot) {
-                *dot = '\0'; // Truncar en el punto
+                *dot = '\0';
             }
+
             base_name = name_copy;
         }
     }
-    
-    // Generar la extensión automática
+
     const char *extension = get_auto_extension(config);
-    
-    // Construir el nombre completo
     size_t path_len = strlen(base_name) + strlen(extension) + 1;
     char *output_name = (char *)malloc(path_len);
     if (output_name) {
         snprintf(output_name, path_len, "%s%s", base_name, extension);
     }
-    
-    // Liberar memoria si hicimos copia
-    if (name_copy) {
-        free(name_copy);
-    }
-    
+
+    free(name_copy);
     return output_name;
 }
 
-void* process_file_for_archive(void *arg) {
-    thread_data_t *data = (thread_data_t *)arg;
-    
-    printf("Hilo %d: Procesando '%s'\n", data->thread_id, data->input_file);
-    
-    // Leer el archivo
-    unsigned char *file_data = NULL;
-    size_t file_size = 0;
-    
-    if (read_file(data->input_file, &file_data, &file_size) == 0) {
-        data->success = 1;
-        data->file_data = file_data;
-        data->file_size = file_size;
-        printf("Hilo %d: ✓ Leído '%s' (%zu bytes)\n", data->thread_id, data->input_file, file_size);
+int create_directory_archive_file(const char *dir_path, const char *archive_path) {
+    if (!dir_path || !archive_path) {
+        return -1;
+    }
+
+    FileList list = {0};
+    read_directory_recursive(dir_path, &list);
+
+    if (list.count == 0) {
+        fprintf(stderr, "Error: el directorio '%s' está vacío o no se pudo leer.\n", dir_path);
+        free_file_list(&list);
+        return -1;
+    }
+
+    FILE *out = open_stream(archive_path, "wb", "crear");
+    if (!out) {
+        free_file_list(&list);
+        return -1;
+    }
+
+    io_buffer_t buffer = {0};
+    int status = write_archive_header(out, list.count);
+
+    for (size_t i = 0; status == 0 && i < list.count; ++i) {
+        status = write_archive_entry(out, dir_path, list.paths[i], &buffer);
+    }
+
+    if (status == 0) {
+        printf("Archive generado en '%s'\n", archive_path);
     } else {
-        data->success = 0;
-        data->file_data = NULL;
-        data->file_size = 0;
-        snprintf(data->error_message, sizeof(data->error_message), 
-                 "Error leyendo '%s'", data->input_file);
-        fprintf(stderr, "Hilo %d: ✗ Error leyendo '%s'\n", data->thread_id, data->input_file);
+        unlink(archive_path);
     }
-    
-    return NULL;
+
+    fclose(out);
+    free_file_list(&list);
+    return status;
 }
 
-archive_t* create_archive_from_dir_concurrent(const char *dir_path) {
-    printf("Creando archive desde directorio usando HILOS: %s\n", dir_path);
-    
-    // Leer todos los archivos del directorio
-    FileList file_list = {0};
-    read_directory_recursive(dir_path, &file_list);
-    
-    if (file_list.count == 0) {
-        return NULL;
+int extract_directory_archive_file(const char *archive_path, const char *output_dir) {
+    if (!archive_path || !output_dir) {
+        return -1;
     }
-    
-    printf("Encontrados %ld archivos, creando %ld hilos...\n", 
-           (long)file_list.count, (long)file_list.count);
-    
-    // Crear estructura archive
-    archive_t *archive = (archive_t*)malloc(sizeof(archive_t));
-    if (!archive) {
-        return NULL;
+
+    FILE *in = open_stream(archive_path, "rb", "abrir");
+    if (!in) {
+        return -1;
     }
-    
-    archive->files = (archive_file_t*)malloc(sizeof(archive_file_t) * file_list.count);
-    if (!archive->files) {
-        free(archive);
-        return NULL;
-    }
-    
-    archive->file_count = file_list.count;
-    archive->total_size = 0;
-    
-    // Inicializar pool de hilos
-    thread_pool_t thread_pool;
-    if (init_thread_pool(&thread_pool, file_list.count) != 0) {
-        fprintf(stderr, "Error: No se pudo inicializar el pool de hilos\n");
-        free(archive->files);
-        free(archive);
-        return NULL;
-    }
-    
-    // Configurar datos para cada hilo
-    size_t base_path_len = strlen(dir_path);
-    
-    for (size_t i = 0; i < file_list.count; i++) {
-        thread_data_t *data = &thread_pool.thread_data[i];
-        
-        data->config = NULL; // No necesitamos config para solo lectura
-        data->input_file = file_list.paths[i];
-        data->thread_id = (int)i;
-        data->success = 0;
-        data->file_data = NULL;
-        data->file_size = 0;
-        
-        // Calcular ruta relativa para el archive
-        const char *full_path = file_list.paths[i];
-        const char *relative_path = full_path + base_path_len;
-        if (*relative_path == '/') relative_path++;
-        
-        data->output_file = strdup(relative_path); // Usamos output_file para almacenar ruta relativa
-        
-        // Crear hilo para leer el archivo
-        if (pthread_create(&thread_pool.threads[i], NULL, process_file_for_archive, data) != 0) {
-            fprintf(stderr, "Error: No se pudo crear hilo para '%s'\n", file_list.paths[i]);
-            free(data->output_file);
-            thread_pool.thread_data[i].success = 0;
-            continue;
-        }
-        
-        thread_pool.active_threads++;
-    }
-    
-    // Esperar a que todos los hilos terminen
-    printf("Esperando a que %d hilos terminen de leer archivos...\n", thread_pool.active_threads);
-    
-    int success_count = 0;
-    int error_count = 0;
-    
-    for (size_t i = 0; i < file_list.count; i++) {
-        if (thread_pool.threads[i] != 0) {
-            if (pthread_join(thread_pool.threads[i], NULL) != 0) {
-                fprintf(stderr, "Error: No se pudo unir hilo %ld\n", i);
-                error_count++;
-            } else {
-                thread_data_t *data = &thread_pool.thread_data[i];
-                
-                if (data->success && data->file_data != NULL) {
-                    // Configurar el archivo en el archive
-                    archive_file_t *file = &archive->files[success_count];
-                    file->path = data->output_file; // La ruta relativa
-                    file->path_length = strlen(file->path);
-                    file->data = data->file_data;
-                    file->size = data->file_size;
-                    
-                    archive->total_size += file->size;
-                    success_count++;
-                    
-                    printf("✓ Archivo %d: '%s' (%zu bytes)\n", success_count, file->path, file->size);
-                } else {
-                    error_count++;
-                    if (data->output_file) free(data->output_file);
-                    if (data->file_data) free(data->file_data);
-                }
-            }
+
+    size_t file_count = 0;
+    int status = read_archive_header(in, &file_count);
+
+    if (status == 0) {
+        status = create_directory(output_dir);
+        if (status != 0) {
+            fprintf(stderr, "Error: no se pudo preparar el directorio de salida '%s'.\n", output_dir);
         }
     }
-    
-    // Actualizar contador real de archivos (solo los exitosos)
-    archive->file_count = success_count;
-    
-    // Liberar recursos del pool
-    free_thread_pool(&thread_pool);
-    
-    // Liberar lista de archivos (las rutas ya fueron copiadas o liberadas)
-    for (size_t i = 0; i < file_list.count; i++) {
-        free(file_list.paths[i]);
-    }
-    free(file_list.paths);
-    
-    printf("Archive creado con %d archivos (%d errores), total: %ld bytes\n",
-           success_count, error_count, (long)archive->total_size);
-    
-    if (success_count == 0) {
-        free_archive(archive);
-        return NULL;
-    }
-    
-    return archive;
-}
 
-size_t calculate_serialized_size(const archive_t *archive) {
-    size_t total_size = ARCHIVE_HEADER_SIZE + sizeof(size_t);
-    
-    for (size_t i = 0; i < archive->file_count; i++) {
-        total_size += sizeof(size_t);
-        total_size += archive->files[i].path_length;
-        total_size += sizeof(size_t);
-        total_size += archive->files[i].size;
+    io_buffer_t buffer = {0};
+    for (size_t i = 0; status == 0 && i < file_count; ++i) {
+        status = extract_archive_entry(in, output_dir, &buffer);
     }
-    
-    return total_size;
-}
 
-archive_t* create_archive_from_dir(const char *dir_path) {
-    // Usar versión concurrente por defecto para mejor rendimiento
-    return create_archive_from_dir_concurrent(dir_path);
-}
+    if (status == 0) {
+        printf("Archive extraído en '%s'\n", output_dir);
+    }
 
-void free_archive(archive_t *archive) {
-    if (!archive) return;
-    
-    for (size_t i = 0; i < archive->file_count; i++) {
-        free(archive->files[i].path);
-        free(archive->files[i].data);
-    }
-    free(archive->files);
-    free(archive);
-}
-
-int serialize_archive(const archive_t *archive, unsigned char **data, size_t *size) {
-    if (!archive || !data || !size) return -1;
-    
-    *size = calculate_serialized_size(archive);
-    *data = (unsigned char*)malloc(*size);
-    if (!*data) return -1;
-    
-    unsigned char *ptr = *data;
-    
-    // Escribir magic number
-    memcpy(ptr, ARCHIVE_MAGIC, ARCHIVE_HEADER_SIZE);
-    ptr += ARCHIVE_HEADER_SIZE;
-    
-    // Escribir número de archivos
-    memcpy(ptr, &archive->file_count, sizeof(size_t));
-    ptr += sizeof(size_t);
-    
-    // Escribir cada archivo
-    for (size_t i = 0; i < archive->file_count; i++) {
-        const archive_file_t *file = &archive->files[i];
-        
-        // Escribir longitud de la ruta
-        memcpy(ptr, &file->path_length, sizeof(size_t));
-        ptr += sizeof(size_t);
-        
-        // Escribir ruta
-        memcpy(ptr, file->path, file->path_length);
-        ptr += file->path_length;
-        
-        // Escribir tamaño de datos
-        memcpy(ptr, &file->size, sizeof(size_t));
-        ptr += sizeof(size_t);
-        
-        // Escribir datos
-        memcpy(ptr, file->data, file->size);
-        ptr += file->size;
-    }
-    
-    return 0;
-}
-
-archive_t* deserialize_archive(const unsigned char *data, size_t size) {
-    if (!data || size < ARCHIVE_HEADER_SIZE + sizeof(size_t)) {
-        return NULL;
-    }
-    
-    const unsigned char *ptr = data;
-    
-    // Verificar header number
-    if (memcmp(ptr, ARCHIVE_MAGIC, ARCHIVE_HEADER_SIZE) != 0) {
-        return NULL;
-    }
-    ptr += ARCHIVE_HEADER_SIZE;
-    
-    // Leer número de archivos
-    size_t file_count;
-    memcpy(&file_count, ptr, sizeof(size_t));
-    ptr += sizeof(size_t);
-    
-    // Crear archive
-    archive_t *archive = (archive_t*)malloc(sizeof(archive_t));
-    if (!archive) return NULL;
-    
-    archive->files = (archive_file_t*)malloc(sizeof(archive_file_t) * file_count);
-    if (!archive->files) {
-        free(archive);
-        return NULL;
-    }
-    
-    archive->file_count = file_count;
-    archive->total_size = 0;
-    
-    // Leer cada archivo
-    for (size_t i = 0; i < file_count; i++) {
-        archive_file_t *file = &archive->files[i];
-        
-        // Leer longitud de la ruta
-        memcpy(&file->path_length, ptr, sizeof(size_t));
-        ptr += sizeof(size_t);
-        
-        if (ptr + file->path_length > data + size) {
-            free_archive(archive);
-            return NULL;
-        }
-        
-        // Leer ruta
-        file->path = (char*)malloc(file->path_length + 1);
-        if (!file->path) {
-            free_archive(archive);
-            return NULL;
-        }
-        memcpy(file->path, ptr, file->path_length);
-        file->path[file->path_length] = '\0';
-        ptr += file->path_length;
-        
-        // Leer tamaño de datos
-        memcpy(&file->size, ptr, sizeof(size_t));
-        ptr += sizeof(size_t);
-        
-        if (ptr + file->size > data + size) {
-            free_archive(archive);
-            return NULL;
-        }
-        
-        // Leer datos
-        file->data = (unsigned char*)malloc(file->size);
-        if (!file->data) {
-            free_archive(archive);
-            return NULL;
-        }
-        memcpy(file->data, ptr, file->size);
-        ptr += file->size;
-        
-        archive->total_size += file->size;
-    }
-    
-    return archive;
-}
-
-int extract_archive(const archive_t *archive, const char *output_dir) {
-    if (!archive || !output_dir) return -1;
-    
-    // Crear directorio base si no existe
-    if (create_directory(output_dir) != 0) {
-        return -1;
-    }
-    
-    printf("Extrayendo %ld archivos usando HILOS...\n", (long)archive->file_count);
-    
-    // Usar procesamiento concurrente para extracción
-    thread_pool_t thread_pool;
-    if (init_thread_pool(&thread_pool, archive->file_count) != 0) {
-        fprintf(stderr, "Error: No se pudo inicializar el pool de hilos para extracción\n");
-        return -1;
-    }
-    
-    int success_count = 0;
-    int error_count = 0;
-    
-    // Crear hilos para escribir archivos
-    for (size_t i = 0; i < archive->file_count; i++) {
-        thread_data_t *data = &thread_pool.thread_data[i];
-        const archive_file_t *file = &archive->files[i];
-        
-        data->config = NULL;
-        data->thread_id = (int)i;
-        data->success = 0;
-        
-        // Construir ruta completa de salida
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", output_dir, file->path);
-        data->output_file = strdup(full_path);
-        
-        // Copiar datos del archivo (en una estructura temporal)
-        data->file_data = (unsigned char*)malloc(file->size);
-        if (!data->file_data) {
-            fprintf(stderr, "Error de memoria para archivo '%s'\n", file->path);
-            free(data->output_file);
-            error_count++;
-            continue;
-        }
-        memcpy(data->file_data, file->data, file->size);
-        data->file_size = file->size;
-        data->input_file = file->path; // Para logging
-        
-        // Crear hilo para escribir el archivo
-        if (pthread_create(&thread_pool.threads[i], NULL, process_file_write, data) != 0) {
-            fprintf(stderr, "Error: No se pudo crear hilo para '%s'\n", file->path);
-            free(data->output_file);
-            free(data->file_data);
-            error_count++;
-            continue;
-        }
-        
-        thread_pool.active_threads++;
-    }
-    
-    // Esperar a que todos los hilos terminen
-    printf("Esperando a que %d hilos terminen de escribir archivos...\n", thread_pool.active_threads);
-    
-    for (size_t i = 0; i < archive->file_count; i++) {
-        if (thread_pool.threads[i] != 0) {
-            if (pthread_join(thread_pool.threads[i], NULL) != 0) {
-                fprintf(stderr, "Error: No se pudo unir hilo %ld\n", i);
-                error_count++;
-            } else {
-                if (thread_pool.thread_data[i].success) {
-                    success_count++;
-                    printf("✓ Extraído: '%s'\n", archive->files[i].path);
-                } else {
-                    error_count++;
-                    fprintf(stderr, "✗ Error extrayendo: '%s'\n", archive->files[i].path);
-                }
-            }
-            
-            // Liberar memoria
-            if (thread_pool.thread_data[i].output_file) {
-                free(thread_pool.thread_data[i].output_file);
-            }
-            if (thread_pool.thread_data[i].file_data) {
-                free(thread_pool.thread_data[i].file_data);
-            }
-        }
-    }
-    
-    free_thread_pool(&thread_pool);
-    
-    printf("Extracción completada: %d exitosos, %d errores\n", success_count, error_count);
-    
-    return (error_count == 0) ? 0 : -1;
-}
-
-void* process_file_write(void *arg) {
-    thread_data_t *data = (thread_data_t *)arg;
-    
-    // Crear directorios padres si es necesario
-    char *dir_path = strdup(data->output_file);
-    char *dir_name = dirname(dir_path);
-    if (create_directory(dir_name) != 0) {
-        fprintf(stderr, "Hilo %d: Error creando directorio para '%s'\n", 
-                data->thread_id, data->output_file);
-        data->success = 0;
-        free(dir_path);
-        return NULL;
-    }
-    free(dir_path);
-    
-    // Escribir archivo
-    if (write_file(data->output_file, data->file_data, data->file_size) == 0) {
-        data->success = 1;
-    } else {
-        data->success = 0;
-        fprintf(stderr, "Hilo %d: Error escribiendo '%s'\n", 
-                data->thread_id, data->output_file);
-    }
-    
-    return NULL;
-}
-
-int compress_directory_only(const program_config_t *config, const char *output_path) {
-    printf("Comprimiendo directorio CON HILOS: %s\n", config->input_path);
-    
-    // Crear archive desde directorio USANDO HILOS
-    archive_t *archive = create_archive_from_dir_concurrent(config->input_path);
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo crear archive del directorio\n");
-        return -1;
-    }
-    
-    printf("Archive creado con hilos: %ld archivos, %ld bytes totales\n", 
-           (long)archive->file_count, (long)archive->total_size);
-    
-    // Serializar archive
-    unsigned char *serialized_data = NULL;
-    size_t serialized_size = 0;
-    if (serialize_archive(archive, &serialized_data, &serialized_size) != 0) {
-        fprintf(stderr, "Error: No se pudo serializar archive\n");
-        free_archive(archive);
-        return -1;
-    }
-    
-    free_archive(archive);
-    
-    printf("Archive serializado: %ld bytes\n", (long)serialized_size);
-    
-    // Comprimir datos serializados
-    compression_result_t compressed = archive_compress(config, serialized_data, serialized_size);
-    
-    free(serialized_data);
-    
-    if (compressed.error != 0) {
-        fprintf(stderr, "Error: No se pudo comprimir archive\n");
-        return -1;
-    }
-    
-    printf("Archive comprimido: %ld → %ld bytes (ratio: %.2f)\n",
-           (long)serialized_size, (long)compressed.size,
-           (double)compressed.size / serialized_size);
-    
-    // Escribir archivo final
-    if (write_file(output_path, compressed.data, compressed.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
-        free_compression_result(&compressed);
-        return -1;
-    }
-    
-    free_compression_result(&compressed);
-    
-    printf("Archive comprimido guardado en: %s\n", output_path);
-    return 0;
-}
-
-int decompress_directory_only(const program_config_t *config, const char *output_path) {
-    printf("Descomprimiendo archive CON HILOS: %s\n", config->input_path);
-    
-    // Leer archivo comprimido
-    unsigned char *compressed_data = NULL;
-    size_t compressed_size = 0;
-    if (read_file(config->input_path, &compressed_data, &compressed_size) != 0) {
-        fprintf(stderr, "Error: No se pudo leer archivo de entrada\n");
-        return -1;
-    }
-    
-    printf("Archive leído: %ld bytes\n", (long)compressed_size);
-    
-    // Descomprimir
-    compression_result_t decompressed = archive_decompress(config, compressed_data, compressed_size);
-    
-    free(compressed_data);
-    
-    if (decompressed.error != 0) {
-        fprintf(stderr, "Error: No se pudo descomprimir archive\n");
-        return -1;
-    }
-    
-    printf("Archive descomprimido: %ld → %ld bytes\n",
-           (long)compressed_size, (long)decompressed.size);
-    
-    // Deserializar archive
-    archive_t *archive = deserialize_archive(decompressed.data, decompressed.size);
-    free_compression_result(&decompressed);
-    
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo deserializar archive (formato inválido)\n");
-        return -1;
-    }
-    
-    printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
-    
-    // Extraer archive a directorio USANDO HILOS
-    if (extract_archive(archive, output_path) != 0) {
-        fprintf(stderr, "Error: No se pudo extraer archive\n");
-        free_archive(archive);
-        return -1;
-    }
-    
-    free_archive(archive);
-    
-    printf("Archive extraído en: %s\n", output_path);
-    return 0;
-}
-
-int is_serialized_archive(const unsigned char *data, size_t size) {
-    if (!data || size < ARCHIVE_HEADER_SIZE) {
-        return 0;
-    }
-    
-    return (memcmp(data, ARCHIVE_MAGIC, ARCHIVE_HEADER_SIZE) == 0);
+    fclose(in);
+    return status;
 }
 
 int is_gsea_archive_file(const char *file_path) {
-    unsigned char *data = NULL;
-    size_t size = 0;
-    int result = 0;
-    
-    if (read_file(file_path, &data, &size) == 0) {
-        // Primero verificar si es un archive serializado sin encriptar
-        if (is_serialized_archive(data, size)) {
-            result = 1;
-        } else {
-            // Si no, podría estar encriptado - intentar una verificación simple
-            if (size > 50) {
-                result = 1;
-            }
-        }
-        free(data);
+    if (file_path == NULL) {
+        return 0;
     }
-    
+
+    int fd = open(file_path, O_RDONLY);
+    if (fd == -1) {
+        return 0;
+    }
+
+    unsigned char header[ARCHIVE_HEADER_SIZE];
+    ssize_t read_bytes = read(fd, header, sizeof(header));
+    close(fd);
+
+    if (read_bytes != (ssize_t)sizeof(header)) {
+        return 0;
+    }
+
+    return (memcmp(header, ARCHIVE_MAGIC, ARCHIVE_HEADER_SIZE) == 0);
+}
+
+static int process_directory_with_pipeline(const program_config_t *config,
+                                           const char *output_path) {
+    char temp_path[MAX_PATH_LENGTH];
+    if (create_temp_archive_file(temp_path, sizeof(temp_path)) != 0) {
+        return -1;
+    }
+
+    if (create_directory_archive_file(config->input_path, temp_path) != 0) {
+        unlink(temp_path);
+        return -1;
+    }
+
+    int result = execute_file_pipeline(config, temp_path, output_path);
+    unlink(temp_path);
     return result;
 }
 
-int compress_and_encrypt_directory(const program_config_t *config, const char *output_path) {
-    printf("Comprimiendo y encriptando directorio CON HILOS: %s\n", config->input_path);
-    
-    // Crear archive desde directorio USANDO HILOS
-    archive_t *archive = create_archive_from_dir_concurrent(config->input_path);
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo crear archive del directorio\n");
+static int process_archive_to_directory(const program_config_t *config,
+                                        const char *output_path) {
+    char temp_path[MAX_PATH_LENGTH];
+    if (create_temp_archive_file(temp_path, sizeof(temp_path)) != 0) {
         return -1;
     }
-    
-    printf("Archive creado con hilos: %ld archivos, %ld bytes totales\n", 
-           (long)archive->file_count, (long)archive->total_size);
-    
-    // Serializar archive
-    unsigned char *serialized_data = NULL;
-    size_t serialized_size = 0;
-    if (serialize_archive(archive, &serialized_data, &serialized_size) != 0) {
-        fprintf(stderr, "Error: No se pudo serializar archive\n");
-        free_archive(archive);
-        return -1;
+
+    int result = execute_file_pipeline(config, config->input_path, temp_path);
+    if (result != 0) {
+        unlink(temp_path);
+        return result;
     }
-    
-    free_archive(archive);
-    
-    printf("Archive serializado: %ld bytes\n", (long)serialized_size);
-    
-    // Comprimir datos serializados
-    compression_result_t compressed = archive_compress(config, serialized_data, serialized_size);
-    
-    free(serialized_data);
-    
-    if (compressed.error != 0) {
-        fprintf(stderr, "Error: No se pudo comprimir archive\n");
-        return -1;
-    }
-    
-    printf("Archive comprimido: %ld → %ld bytes (ratio: %.2f)\n",
-           (long)serialized_size, (long)compressed.size,
-           (double)compressed.size / serialized_size);
-    
-    // Encriptar datos comprimidos
-    encryption_result_t encrypted = encrypt_vigenere(
-        compressed.data, compressed.size,
-        (const unsigned char *)config->key, strlen(config->key)
-    );
-    free_compression_result(&compressed);
-    
-    if (encrypted.error != 0) {
-        fprintf(stderr, "Error: No se pudo encriptar archive\n");
-        return -1;
-    }
-    
-    printf("Archive encriptado: %ld bytes\n", (long)encrypted.size);
-    
-    // Escribir archivo final
-    if (write_file(output_path, encrypted.data, encrypted.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
-        free_encryption_result(&encrypted);
-        return -1;
-    }
-    
-    free_encryption_result(&encrypted);
-    
-    printf("Archive guardado en: %s\n", output_path);
-    return 0;
+
+    result = extract_directory_archive_file(temp_path, output_path);
+    unlink(temp_path);
+    return result;
 }
 
-int decrypt_and_decompress_directory(const program_config_t *config, const char *output_path) {
-    printf("Desencriptando y descomprimiendo archive CON HILOS: %s\n", config->input_path);
-    
-    // Leer archivo encriptado
-    unsigned char *encrypted_data = NULL;
-    size_t encrypted_size = 0;
-    if (read_file(config->input_path, &encrypted_data, &encrypted_size) != 0) {
-        fprintf(stderr, "Error: No se pudo leer archivo de entrada\n");
-        return -1;
-    }
-    
-    printf("Archive leído: %ld bytes\n", (long)encrypted_size);
-    
-    // Desencriptar
-    encryption_result_t decrypted = decrypt_vigenere(
-        encrypted_data, encrypted_size,
-        (const unsigned char *)config->key, strlen(config->key)
-    );
-    free(encrypted_data);
-    
-    if (decrypted.error != 0) {
-        fprintf(stderr, "Error: No se pudo desencriptar archive\n");
-        return -1;
-    }
-    
-    printf("Archive desencriptado: %ld → %ld bytes\n",
-           (long)encrypted_size, (long)decrypted.size);
-    
-    // Descomprimir
-    compression_result_t decompressed = archive_decompress(config, decrypted.data, decrypted.size);
-    free_encryption_result(&decrypted);
-    
-    if (decompressed.error != 0) {
-        fprintf(stderr, "Error: No se pudo descomprimir archive\n");
-        return -1;
-    }
-    
-    printf("Archive descomprimido: %ld → %ld bytes\n",
-           (long)decrypted.size, (long)decompressed.size);
-    
-    // Deserializar archive
-    archive_t *archive = deserialize_archive(decompressed.data, decompressed.size);
-    free_compression_result(&decompressed);
-    
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo deserializar archive (formato inválido)\n");
-        return -1;
-    }
-    
-    printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
-    
-    // Extraer archive a directorio USANDO HILOS
-    if (extract_archive(archive, output_path) != 0) {
-        fprintf(stderr, "Error: No se pudo extraer archive\n");
-        free_archive(archive);
-        return -1;
-    }
-    
-    free_archive(archive);
-    
-    printf("Archive extraído en: %s\n", output_path);
-    return 0;
+int compress_directory_only(const program_config_t *config, const char *output_path) {
+    printf("Comprimiendo directorio: %s\n", config->input_path);
+    return process_directory_with_pipeline(config, output_path);
+}
+
+int compress_and_encrypt_directory(const program_config_t *config, const char *output_path) {
+    printf("Comprimiendo y encriptando directorio: %s\n", config->input_path);
+    return process_directory_with_pipeline(config, output_path);
 }
 
 int encrypt_directory_only(const program_config_t *config, const char *output_path) {
-    printf("Encriptando directorio CON HILOS: %s\n", config->input_path);
-    
-    // Crear archive desde directorio USANDO HILOS
-    archive_t *archive = create_archive_from_dir_concurrent(config->input_path);
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo crear archive del directorio\n");
-        return -1;
-    }
-    
-    printf("Archive creado con hilos: %ld archivos, %ld bytes totales\n", 
-           (long)archive->file_count, (long)archive->total_size);
-    
-    // Serializar archive
-    unsigned char *serialized_data = NULL;
-    size_t serialized_size = 0;
-    if (serialize_archive(archive, &serialized_data, &serialized_size) != 0) {
-        fprintf(stderr, "Error: No se pudo serializar archive\n");
-        free_archive(archive);
-        return -1;
-    }
-    
-    free_archive(archive);
-    
-    printf("Archive serializado: %ld bytes\n", (long)serialized_size);
-    
-    // Encriptar datos serializados
-    encryption_result_t encrypted = encrypt_vigenere(
-        serialized_data, serialized_size,
-        (const unsigned char *)config->key, strlen(config->key)
-    );
-    free(serialized_data);
-    
-    if (encrypted.error != 0) {
-        fprintf(stderr, "Error: No se pudo encriptar archive\n");
-        return -1;
-    }
-    
-    printf("Archive encriptado: %ld bytes\n", (long)encrypted.size);
-    
-    // Escribir archivo final
-    if (write_file(output_path, encrypted.data, encrypted.size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir archivo de salida '%s'\n", output_path);
-        free_encryption_result(&encrypted);
-        return -1;
-    }
-    
-    free_encryption_result(&encrypted);
-    
-    printf("Archive encriptado guardado en: %s\n", output_path);
-    return 0;
+    printf("Encriptando directorio: %s\n", config->input_path);
+    return process_directory_with_pipeline(config, output_path);
+}
+
+int decompress_directory_only(const program_config_t *config, const char *output_path) {
+    printf("Descomprimiendo archive: %s\n", config->input_path);
+    return process_archive_to_directory(config, output_path);
 }
 
 int decrypt_directory_only(const program_config_t *config, const char *output_path) {
-    printf("Desencriptando archive CON HILOS: %s\n", config->input_path);
-    
-    // Leer archivo encriptado
-    unsigned char *encrypted_data = NULL;
-    size_t encrypted_size = 0;
-    if (read_file(config->input_path, &encrypted_data, &encrypted_size) != 0) {
-        fprintf(stderr, "Error: No se pudo leer archivo de entrada\n");
-        return -1;
-    }
-    
-    printf("Archive leído: %ld bytes\n", (long)encrypted_size);
-    
-    // Desencriptar
-    encryption_result_t decrypted = decrypt_vigenere(
-        encrypted_data, encrypted_size,
-        (const unsigned char *)config->key, strlen(config->key)
-    );
-    free(encrypted_data);
-    
-    if (decrypted.error != 0) {
-        fprintf(stderr, "Error: No se pudo desencriptar archive\n");
-        return -1;
-    }
-    
-    printf("Archive desencriptado: %ld → %ld bytes\n",
-           (long)encrypted_size, (long)decrypted.size);
-    
-    // Deserializar archive
-    archive_t *archive = deserialize_archive(decrypted.data, decrypted.size);
-    free_encryption_result(&decrypted);
-    
-    if (!archive) {
-        fprintf(stderr, "Error: No se pudo deserializar archive (formato inválido)\n");
-        return -1;
-    }
-    
-    printf("Archive deserializado: %ld archivos\n", (long)archive->file_count);
-    
-    // Extraer archive a directorio USANDO HILOS
-    if (extract_archive(archive, output_path) != 0) {
-        fprintf(stderr, "Error: No se pudo extraer archive\n");
-        free_archive(archive);
-        return -1;
-    }
-    
-    free_archive(archive);
-    
-    printf("Archive extraído en: %s\n", output_path);
-    return 0;
+    printf("Desencriptando archive: %s\n", config->input_path);
+    return process_archive_to_directory(config, output_path);
+}
+
+int decrypt_and_decompress_directory(const program_config_t *config, const char *output_path) {
+    printf("Desencriptando y descomprimiendo archive: %s\n", config->input_path);
+    return process_archive_to_directory(config, output_path);
 }

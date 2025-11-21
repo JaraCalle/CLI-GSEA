@@ -51,55 +51,22 @@ operation_mode_t detect_operation_mode(const program_config_t *config) {
 }
 
 int execute_single_file_operations(const program_config_t *config) {
-    unsigned char *input_data = NULL;
-    unsigned char *output_data = NULL;
-    size_t input_size = 0;
-    size_t output_size = 0;
-    int result = 0;
-    
-    // Procesar path de salida automáticamente
     char *output_path = process_output_path(config);
-    
-    // Paso 1: Leer archivo de entrada
-    printf("Paso 1: Leyendo archivo de entrada: %s\n", config->input_path);
-    if (read_file(config->input_path, &input_data, &input_size) != 0) {
-        fprintf(stderr, "Error: No se pudo leer el archivo de entrada '%s'\n", config->input_path);
-        free(output_path);
+    if (output_path == NULL) {
+        fprintf(stderr, "Error: No se pudo determinar la ruta de salida\n");
         return -1;
     }
-    printf("  ✓ Archivo leído correctamente (%zu bytes)\n", input_size);
-    
-    // Paso 2: Procesar datos (compresión/encriptación)
-    printf("Paso 2: Procesando datos...\n");
-    result = execute_operations_sequential(config, input_data, input_size, 
-                                         &output_data, &output_size);
-    
-    // Liberar datos de entrada inmediatamente después del procesamiento
-    free(input_data);
-    input_data = NULL;
-    
+
+    printf("Paso 1: Ejecutando pipeline de archivos\n");
+    int result = execute_file_pipeline(config, config->input_path, output_path);
     if (result != 0) {
-        if (output_data != NULL) {
-            free(output_data);
-        }
+        fprintf(stderr, "Error: Falló el procesamiento de '%s'\n", config->input_path);
         free(output_path);
         return -1;
     }
-    
-    // Paso 3: Escribir archivo de salida
-    printf("Paso 3: Escribiendo archivo de salida: %s\n", output_path);
-    if (write_file(output_path, output_data, output_size) != 0) {
-        fprintf(stderr, "Error: No se pudo escribir el archivo de salida '%s'\n", output_path);
-        free(output_data);
-        free(output_path);
-        return -1;
-    }
-    printf("  ✓ Archivo escrito correctamente (%zu bytes)\n", output_size);
-    
-    // Liberar memoria final
-    free(output_data);
+    printf("  ✓ Archivo procesado correctamente → %s\n", output_path);
+
     free(output_path);
-    
     printf("Procesamiento completado exitosamente\n");
     return 0;
 }
@@ -183,7 +150,11 @@ int execute_operations(const program_config_t *config) {
             
         case MODE_ARCHIVE_EXTRACT:
             printf("Entrada detectada como archive - Extrayendo a directorio\n");
-            return execute_directory_operations(config);
+            if (execute_directory_operations(config) == 0) {
+                return 0;
+            }
+            fprintf(stderr, "Advertencia: Falló el procesamiento como archive, intentando modo archivo único...\n");
+            return execute_single_file_operations(config);
             
         case MODE_SINGLE_FILE:
         default:
